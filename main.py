@@ -21,11 +21,11 @@ def parse_args():
 
     # Highway configuration
     parser.add_argument(
-        "--highway-length", type=float, default=300.0,
+        "--highway-length", type=float, default=3000.0,
         help="Highway length in kilometers"
     )
     parser.add_argument(
-        "--num-stations", type=int, default=3,
+        "--num-stations", type=int, default=5,
         help="Number of charging stations along the highway"
     )
     parser.add_argument(
@@ -99,8 +99,8 @@ def main():
         early_stop=EarlyStopCondition(
             max_consecutive_strandings=10,
             abandonment_rate_threshold=0.3,
-            max_queue_occupancy=1.5,
-            convergence_patience=200
+            max_queue_occupancy=10.5,
+            convergence_patience=2000
         )
     )
 

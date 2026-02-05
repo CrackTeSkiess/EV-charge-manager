@@ -619,8 +619,24 @@ class Vehicle:
                 result['stranded'] = True
                 return result
             
-            # Check for station approach
+            # Check for station approach and proactive charging decision
             upcoming_stations = env['upcoming_stations']
+
+            # Proactive charging: if SOC is low, find a reachable station
+            if self.needs_charging() and self.state == VehicleState.CRUISING:
+                for station in upcoming_stations:
+                    distance = station['location_km'] - self.position_km
+                    if distance > 0 and self.can_reach_station(station['location_km']):
+                        # Set target and start approaching
+                        self.target_station_id = station.get('area_id', station.get('id'))
+                        self.set_state(VehicleState.APPROACHING, timestamp,
+                                     f"seeking charging at {self.target_station_id}")
+                        result['state_changed'] = True
+                        result['needs_decision'] = True
+                        result['decision_options'] = upcoming_stations
+                        break
+
+            # Check if within 10km of any station (normal approach trigger)
             for station in upcoming_stations:
                 distance = station['location_km'] - self.position_km
                 if 0 < distance <= 10.0:  # Within 10km
@@ -630,7 +646,7 @@ class Vehicle:
                                      f"approaching {station_id}")
                         result['state_changed'] = True
                     break
-            
+
             # Check if needs charging decision
             if self.state == VehicleState.APPROACHING and self.needs_charging():
                 result['needs_decision'] = True

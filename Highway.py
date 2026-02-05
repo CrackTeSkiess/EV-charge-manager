@@ -261,8 +261,9 @@ class Highway:
             if result['action'] == 'immediate':
                 # Start charging immediately
                 self.vehicles_at_station[vehicle_id] = area_id
-                vehicle.set_state(VehicleState.CHARGING, timestamp, 
+                vehicle.set_state(VehicleState.CHARGING, timestamp,
                                 f"immediate at {area_id}")
+                self.stats['total_charging_stops'] += 1
                 
                 # Start session (simplified - would get energy need from vehicle)
                 session_result = area.start_charging(
@@ -465,7 +466,10 @@ class Highway:
             
             # Get environment for this vehicle
             segment = self.get_segment_at(vehicle.position_km)
-            upcoming = self.get_stations_in_range(vehicle.position_km, 50.0)
+            # Lookahead should cover vehicle's estimated range to plan charging
+            vehicle_range = vehicle.get_range_estimate()
+            lookahead = max(100.0, min(vehicle_range * 1.5, 300.0))  # 100-300km lookahead
+            upcoming = self.get_stations_in_range(vehicle.position_km, lookahead)
             
             # Traffic speed (simplified - average of nearby vehicles)
             nearby = self.get_vehicles_near_position(vehicle.position_km, 2.0)

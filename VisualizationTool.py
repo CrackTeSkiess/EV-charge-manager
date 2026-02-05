@@ -126,8 +126,8 @@ class VisualizationTool:
                            fontsize=config.label_fontsize)
         ax1_twin.tick_params(axis='y', labelcolor=self.colors['secondary'])
         
-        ax1.set_title('🚗 Cars Quit Waiting (Abandonments)', 
-                     fontsize=config.title_fontsize, fontweight='bold', 
+        ax1.set_title('Cars Quit Waiting (Abandonments)',
+                     fontsize=config.title_fontsize, fontweight='bold',
                      color=self.colors['text'])
         ax1.set_ylabel('Vehicles per Step', fontsize=config.label_fontsize, 
                       color=self.colors['text'])
@@ -170,8 +170,8 @@ class VisualizationTool:
                             fontsize=config.annotation_fontsize,
                             color=self.colors['danger'], fontweight='bold')
         
-        ax2.set_title('🔋 Cars with 0% Battery (Strandings)', 
-                     fontsize=config.title_fontsize, fontweight='bold', 
+        ax2.set_title('Cars with 0% Battery (Strandings)',
+                     fontsize=config.title_fontsize, fontweight='bold',
                      color=self.colors['text'])
         ax2.set_ylabel('Vehicles per Step', fontsize=config.label_fontsize, 
                       color=self.colors['text'])
@@ -252,23 +252,41 @@ class VisualizationTool:
     
     def _plot_vehicle_counts(self, ax: plt.Axes, time_index: pd.DatetimeIndex,  # pyright: ignore[reportPrivateImportUsage]
                             config: ChartConfig):
-        """Plot vehicle count time series."""
+        """Plot vehicle count time series with dual y-axis for better visibility."""
         ax.set_facecolor(self.colors['background'])
-        
+
+        # Primary axis: vehicles on road
         ax.fill_between(time_index, self.df['vehicles_on_road'],  # pyright: ignore[reportOptionalSubscript]
                        alpha=0.3, color=self.colors['primary'], label='On road')
-        ax.plot(time_index, self.df['vehicles_on_road'],   # pyright: ignore[reportOptionalSubscript]
-               color=self.colors['primary'], linewidth=2)
-        
-        ax.plot(time_index, self.df['total_charging'],   # pyright: ignore[reportOptionalSubscript]
-               color=self.colors['success'], linewidth=2, label='Charging')
-        ax.plot(time_index, self.df['total_queued'],   # pyright: ignore[reportOptionalSubscript]
-               color=self.colors['warning'], linewidth=2, label='Queued')
-        
-        ax.set_title('Vehicle Distribution', fontsize=config.title_fontsize, 
+        line1, = ax.plot(time_index, self.df['vehicles_on_road'],   # pyright: ignore[reportOptionalSubscript]
+               color=self.colors['primary'], linewidth=2, label='On road')
+
+        ax.set_ylabel('Vehicles on Road', fontsize=config.label_fontsize,
+                     color=self.colors['primary'])
+        ax.tick_params(axis='y', labelcolor=self.colors['primary'])
+
+        # Secondary axis: charging and queued (for better visibility)
+        ax2 = ax.twinx()
+        line2, = ax2.plot(time_index, self.df['total_charging'],   # pyright: ignore[reportOptionalSubscript]
+               color=self.colors['success'], linewidth=2.5, label='Charging')
+        line3, = ax2.plot(time_index, self.df['total_queued'],   # pyright: ignore[reportOptionalSubscript]
+               color=self.colors['warning'], linewidth=2.5, linestyle='--', label='Queued')
+
+        ax2.set_ylabel('Charging / Queued', fontsize=config.label_fontsize,
+                      color=self.colors['success'])
+        ax2.tick_params(axis='y', labelcolor=self.colors['success'])
+
+        # Ensure secondary axis starts at 0 and has reasonable range
+        max_station_activity = max(self.df['total_charging'].max(), self.df['total_queued'].max(), 1)  # pyright: ignore[reportOptionalSubscript]
+        ax2.set_ylim(0, max_station_activity * 1.2)
+
+        ax.set_title('Vehicle Distribution', fontsize=config.title_fontsize,
                     color=self.colors['text'], fontweight='bold')
-        ax.set_ylabel('Count', fontsize=config.label_fontsize, color=self.colors['text'])
-        ax.legend(loc='upper left')
+
+        # Combined legend
+        lines = [line1, line2, line3]
+        labels = ['On road', 'Charging', 'Queued']
+        ax.legend(lines, labels, loc='upper left', fontsize=config.tick_fontsize)
         ax.tick_params(colors=self.colors['text'])
         ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))
     
@@ -283,12 +301,12 @@ class VisualizationTool:
         latest = self.df.iloc[-1] # pyright: ignore[reportOptionalMemberAccess]
         
         stats = [
-            ('🚗 Total Vehicles', f"{int(latest['vehicles_on_road'])}", self.colors['primary']),
-            ('⚡ Charging', f"{int(latest['total_charging'])}", self.colors['success']),
-            ('⏳ Queued', f"{int(latest['total_queued'])}", self.colors['warning']),
-            ('⏱️ Avg Wait', f"{latest['avg_wait_time_minutes']:.1f} min", self.colors['info']),
-            ('🔋 Avg SOC', f"{latest['avg_soc_percent']:.1f}%", self.colors['secondary']),
-            ('✅ Service Level', f"{latest['service_level']*100:.1f}%", self.colors['success']),
+            ('Total Vehicles', f"{int(latest['vehicles_on_road'])}", self.colors['primary']),
+            ('Charging', f"{int(latest['total_charging'])}", self.colors['success']),
+            ('Queued', f"{int(latest['total_queued'])}", self.colors['warning']),
+            ('Avg Wait', f"{latest['avg_wait_time_minutes']:.1f} min", self.colors['info']),
+            ('Avg SOC', f"{latest['avg_soc_percent']:.1f}%", self.colors['secondary']),
+            ('Service Level', f"{latest['service_level']*100:.1f}%", self.colors['success']),
         ]
         
         y_pos = 0.9
@@ -402,24 +420,37 @@ class VisualizationTool:
                              config: ChartConfig):
         """Plot service level and customer satisfaction."""
         ax.set_facecolor(self.colors['background'])
-        
+
         service = self.df['service_level'] * 100 # pyright: ignore[reportOptionalSubscript]
         satisfaction = self.df['customer_satisfaction_score'] * 100 # pyright: ignore[reportOptionalSubscript]
-        
-        ax.plot(time_index, service, color=self.colors['success'], 
+
+        ax.plot(time_index, service, color=self.colors['success'],
                linewidth=2.5, label='Service Level', marker='o', markersize=3)
-        ax.plot(time_index, satisfaction, color=self.colors['secondary'], 
+        ax.plot(time_index, satisfaction, color=self.colors['secondary'],
                linewidth=2.5, label='Satisfaction', marker='s', markersize=3)
-        
-        # Target zones
-        ax.axhspan(90, 100, alpha=0.1, color=self.colors['success'])
-        ax.axhspan(70, 90, alpha=0.1, color=self.colors['warning'])
-        ax.axhspan(0, 70, alpha=0.1, color=self.colors['danger'])
-        
-        ax.set_title('Service Quality Metrics', fontsize=config.title_fontsize, 
+
+        # Calculate dynamic y-axis range to show variation better
+        min_val = min(service.min(), satisfaction.min())
+
+        # If values are clustered high (>80%), zoom in to show variation
+        if min_val > 80:
+            y_min = max(0, min_val - 5)
+            y_max = 105
+            # Target zones adjusted
+            ax.axhspan(90, 100, alpha=0.15, color=self.colors['success'], label='Excellent')
+            ax.axhline(90, color=self.colors['success'], linestyle='--', alpha=0.5)
+        else:
+            y_min = 0
+            y_max = 105
+            # Full target zones
+            ax.axhspan(90, 100, alpha=0.1, color=self.colors['success'])
+            ax.axhspan(70, 90, alpha=0.1, color=self.colors['warning'])
+            ax.axhspan(0, 70, alpha=0.1, color=self.colors['danger'])
+
+        ax.set_title('Service Quality Metrics', fontsize=config.title_fontsize,
                     color=self.colors['text'], fontweight='bold')
         ax.set_ylabel('Score %', fontsize=config.label_fontsize, color=self.colors['text'])
-        ax.set_ylim(0, 105)
+        ax.set_ylim(y_min, y_max)
         ax.legend(loc='lower right', fontsize=config.label_fontsize)
         ax.tick_params(colors=self.colors['text'])
         ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))

@@ -112,10 +112,40 @@ class Environment:
         if self.config.charging_area_positions:
             positions = self.config.charging_area_positions
         else:
-            # Auto-space evenly along highway
+            # Auto-space based on realistic vehicle range
+            # Assume worst-case: 40kWh battery at 40% SOC, ~0.2 kWh/km consumption
+            # This gives ~80km range, so stations should be ~100km apart max
+            MAX_STATION_SPACING_KM = 100.0
+
             n = self.config.num_charging_areas
-            spacing = self.config.highway_length_km / (n + 1)
-            positions = [spacing * (i + 1) for i in range(n)]
+            if n == 0:
+                positions = []
+            else:
+                # Calculate required number of stations for safe coverage
+                min_stations_needed = max(1, int(self.config.highway_length_km / MAX_STATION_SPACING_KM))
+                actual_stations = max(n, min_stations_needed)
+
+                if actual_stations != n:
+                    import warnings
+                    warnings.warn(
+                        f"Highway length {self.config.highway_length_km}km requires at least "
+                        f"{min_stations_needed} stations for safe coverage. "
+                        f"Using {actual_stations} instead of {n}."
+                    )
+
+                # Space stations evenly, but ensure first station is reachable
+                spacing = self.config.highway_length_km / (actual_stations + 1)
+                # Cap first station at 80km so vehicles can reach it
+                first_station = min(spacing, 80.0)
+                positions = [first_station]
+
+                # Place remaining stations evenly in remaining distance
+                remaining_distance = self.config.highway_length_km - first_station
+                remaining_stations = actual_stations - 1
+                if remaining_stations > 0:
+                    remaining_spacing = remaining_distance / (remaining_stations + 1)
+                    for i in range(remaining_stations):
+                        positions.append(first_station + remaining_spacing * (i + 1))
         
         # Create charging areas
         charging_areas = []

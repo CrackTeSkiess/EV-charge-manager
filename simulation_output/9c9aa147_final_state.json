@@ -1,19 +1,19 @@
 {
-  "vehicles_remaining": 220,
-  "total_spawned": 373,
-  "total_completed": 153,
+  "vehicles_remaining": 6852,
+  "total_spawned": 12000,
+  "total_completed": 5148,
   "total_stranded": 0,
   "final_queue_states": {
     "AREA-01": {
-      "queue_length": 1,
+      "queue_length": 6,
       "charging": 4
     },
     "AREA-02": {
-      "queue_length": 1,
+      "queue_length": 6,
       "charging": 4
     },
     "AREA-03": {
-      "queue_length": 0,
+      "queue_length": 6,
       "charging": 4
     }
   }
