@@ -570,7 +570,21 @@ class Vehicle:
              environment: Optional[Dict] = None) -> Dict:
         """
         Execute one simulation step.
-        
+
+        Args:
+            timestamp: Current simulation time
+            time_step_minutes: Duration of this step in minutes
+            environment: Dict with optional keys:
+                - speed_limit_kmh: Speed limit (default 130)
+                - traffic_speed_kmh: Current traffic speed (optional)
+                - upcoming_stations: List of station info dicts
+                - station_comfort: Comfort level 0-1 (default 0.5)
+                - queue_position: Current position in queue
+                - estimated_wait: Estimated wait time in minutes
+                - alternative_available: Whether alternative stations exist
+                - charging_complete: Whether charging session finished
+                - session_duration: Duration of completed session
+
         Returns dict with state changes and alerts.
         """
         result = {
@@ -581,15 +595,23 @@ class Vehicle:
             'abandoned': False,
             'charging_complete': False
         }
-        
+
+        # Use empty dict if None, with safe defaults for all accessed keys
         env = environment or {}
+        # Define defaults for commonly accessed keys
+        env.setdefault('speed_limit_kmh', 130.0)
+        env.setdefault('upcoming_stations', [])
+        env.setdefault('station_comfort', 0.5)
+        env.setdefault('queue_position', 99)
+        env.setdefault('estimated_wait', 30)
+        env.setdefault('alternative_available', False)
         
         # Physics update (unless charging/queued)
-        if self.state in [VehicleState.CRUISING, VehicleState.APPROACHING, 
+        if self.state in [VehicleState.CRUISING, VehicleState.APPROACHING,
                          VehicleState.EXITING]:
-            
-            speed_limit = env.get('speed_limit_kmh', 130.0)
-            traffic_speed = env.get('traffic_speed_kmh')
+
+            speed_limit = env['speed_limit_kmh']
+            traffic_speed = env.get('traffic_speed_kmh')  # Optional, can be None
             
             success = self.update_physics(time_step_minutes, speed_limit, traffic_speed)
             
@@ -598,13 +620,14 @@ class Vehicle:
                 return result
             
             # Check for station approach
-            upcoming_stations = env.get('upcoming_stations', [])
+            upcoming_stations = env['upcoming_stations']
             for station in upcoming_stations:
                 distance = station['location_km'] - self.position_km
                 if 0 < distance <= 10.0:  # Within 10km
                     if self.state != VehicleState.APPROACHING:
-                        self.set_state(VehicleState.APPROACHING, timestamp, 
-                                     f"approaching {station['id']}")
+                        station_id = station.get('area_id', station.get('id', 'unknown'))
+                        self.set_state(VehicleState.APPROACHING, timestamp,
+                                     f"approaching {station_id}")
                         result['state_changed'] = True
                     break
             
@@ -617,15 +640,15 @@ class Vehicle:
             # Update waiting experience
             if self.queue_entry_time:
                 wait_min = (timestamp - self.queue_entry_time).total_seconds() / 60
-                comfort = env.get('station_comfort', 0.5)
+                comfort = env['station_comfort']
                 self.update_patience(wait_min, comfort)
-                
+
                 # Check abandonment
                 should_abandon = self.driver.decide_to_abort(
                     self.current_patience,
-                    env.get('queue_position', 99),
-                    env.get('estimated_wait', 30),
-                    env.get('alternative_available', False)
+                    env['queue_position'],
+                    env['estimated_wait'],
+                    env['alternative_available']
                 )
                 
                 if should_abandon:

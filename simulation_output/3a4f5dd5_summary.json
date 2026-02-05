@@ -1,0 +1,79 @@
+{
+  "simulation_id": "3a4f5dd5",
+  "stop_reason": "CONVERGENCE",
+  "stop_message": "Converged: no improvement for 200 steps",
+  "final_step": 201,
+  "final_time": "2024-01-15T09:22:00",
+  "wall_clock_time_seconds": 0.633089,
+  "summary_statistics": {
+    "simulation_id": "3a4f5dd5",
+    "total_steps": 202,
+    "duration_hours": 3.35,
+    "total_cars_quit_waiting": 66,
+    "total_cars_zero_battery": 0,
+    "avg_quit_per_hour": 19.603960396039604,
+    "avg_stranded_per_hour": 0.0,
+    "avg_queue_occupancy": 0.03822882288228823,
+    "peak_queue_occupancy": 0.2222222222222222,
+    "avg_wait_time": 0.7273102310231022,
+    "max_wait_time": 5.0,
+    "avg_utilization": 0.6815181518151816,
+    "avg_service_level": 0.9986055443472052,
+    "avg_satisfaction": 0.8059628923814863,
+    "total_revenue": 165.2,
+    "wait_trend": 0.9652777777777779,
+    "wait_time_std": 1.052649805257907,
+    "utilization_std": 0.5241403026698125,
+    "final_completion_rate": 0.0,
+    "final_abandonment_rate": 0.0
+  },
+  "parameters": {
+    "highway_length_km": 300.0,
+    "num_charging_areas": 3,
+    "charging_area_positions": null,
+    "chargers_per_area": 4,
+    "charger_power_tiers": {
+      "fast": 3,
+      "ultra": 1
+    },
+    "waiting_spots_per_area": 6,
+    "vehicles_per_hour": 100.0,
+    "temporal_distribution": "RUSH_HOUR",
+    "simulation_duration_hours": 4.0,
+    "vehicle_type_distribution": {
+      "compact": 0.25,
+      "midsize": 0.4,
+      "premium": 0.25,
+      "truck": 0.1
+    },
+    "driver_behavior_distribution": {
+      "conservative": 0.25,
+      "balanced": 0.4,
+      "aggressive": 0.25,
+      "range_anxious": 0.1
+    },
+    "time_step_minutes": 1.0,
+    "start_time": "2024-01-15T06:00:00",
+    "random_seed": null,
+    "early_stop": {
+      "max_simulation_steps": null,
+      "max_wall_clock_seconds": null,
+      "max_consecutive_strandings": 10,
+      "stranding_window": 5,
+      "max_consecutive_abandonments": 20,
+      "abandonment_rate_threshold": 0.3,
+      "abandonment_window": 10,
+      "max_queue_occupancy": 1.5,
+      "sustained_queue_occupancy_steps": 10,
+      "min_service_level": 0.5,
+      "service_level_window": 20,
+      "convergence_patience": 200,
+      "convergence_tolerance": 0.01,
+      "stop_if_empty": false,
+      "empty_grace_period": 60
+    },
+    "kpi_log_interval": 1
+  },
+  "stop_trigger": "convergence",
+  "stop_value": 0.0
+}

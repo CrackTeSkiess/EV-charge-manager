@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 from enum import Enum, auto
 from collections import deque
 
+import numpy as np
+
 from Environment import Environment, SimulationConfig
 from Vehicle import Vehicle, DriverBehavior
 from ChargingArea import ChargingArea, ChargerType
@@ -160,7 +162,7 @@ class VehicleGenerator:
         elif self.config.distribution_type == TemporalDistribution.RANDOM_POISSON:
             # Poisson: each minute is independent draw with mean target/60
             mean_per_minute = target / 60
-            schedule = [random.poissonvariate(mean_per_minute) for _ in range(minutes)] # pyright: ignore[reportAttributeAccessIssue]
+            schedule = list(np.random.poisson(mean_per_minute, minutes))
             
         elif self.config.distribution_type == TemporalDistribution.RUSH_HOUR:
             # Bimodal: morning and evening peaks
@@ -221,7 +223,7 @@ class VehicleGenerator:
             minute_rate = base_rate * intensity
             
             # Poisson draw
-            count = random.paretovariate(minute_rate) if minute_rate > 0 else 0 # pyright: ignore[reportAttributeAccessIssue]
+            count = int(np.random.poisson(minute_rate)) if minute_rate > 0 else 0
             schedule.append(count)
         
         return schedule
@@ -246,7 +248,7 @@ class VehicleGenerator:
             
             intensity = 1 + (peak_ratio - 1) * peak
             minute_rate = base_rate * intensity
-            count = random.poissonvariate(minute_rate) if minute_rate > 0 else 0 # pyright: ignore[reportAttributeAccessIssue]
+            count = int(np.random.poisson(minute_rate)) if minute_rate > 0 else 0
             schedule.append(count)
         
         return schedule
@@ -262,7 +264,7 @@ class VehicleGenerator:
             # Sinusoidal variation ±30% around mean
             variation = 0.3 * math.sin(2 * math.pi * hour_frac / period)
             minute_rate = (target / 60) * (1 + variation)
-            count = max(0, random.poissonvariate(minute_rate)) # pyright: ignore[reportAttributeAccessIssue]
+            count = max(0, int(np.random.poisson(max(0, minute_rate))))
             schedule.append(count)
         
         return schedule
@@ -292,7 +294,7 @@ class VehicleGenerator:
             else:
                 rate = base_rate
             
-            count = random.poissonvariate(rate) if rate > 0 else 0 # pyright: ignore[reportAttributeAccessIssue]
+            count = int(np.random.poisson(rate)) if rate > 0 else 0
             schedule.append(count)
         
         return schedule

@@ -502,12 +502,15 @@ class ChargingArea:
         for entry in self.queue:
             if entry.patience_score < 0:
                 cleaned += 1
-                self.waiting_occupied -= 1
+                # Note: waiting_occupied already decremented in abandon_queue()
+                # Only decrement if entry still in queue_map (not already processed)
+                if entry.vehicle_id in self.queue_map:
+                    del self.queue_map[entry.vehicle_id]
             else:
                 # Update position
                 entry.queue_position = len(new_queue) + 1
                 new_queue.append(entry)
-        
+
         self.queue = new_queue
         heapq.heapify(self.queue)  # Re-heapify
         return cleaned
@@ -518,10 +521,10 @@ class ChargingArea:
             entry = heapq.heappop(self.queue)
             if entry.patience_score >= 0 and entry.vehicle_id in self.queue_map:
                 return entry
-            # Abandoned entry, clean up
+            # Abandoned entry - just clean up queue_map if still there
+            # Note: waiting_occupied already handled in abandon_queue()
             if entry.vehicle_id in self.queue_map:
                 del self.queue_map[entry.vehicle_id]
-            self.waiting_occupied -= 1
         return None
     
     # =========================================================================

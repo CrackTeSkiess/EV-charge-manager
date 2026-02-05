@@ -388,8 +388,10 @@ class Highway:
             # Check if vehicle wants to stop (reached target SOC)
             session = charger.current_session
             if session:
-                # Calculate if charged enough
-                if vehicle.battery.current_soc >= vehicle.driver.target_soc * 0.95:
+                # Calculate if charged enough - use driver's target_soc directly
+                # The 0.95 factor was a workaround for slow final charging, but
+                # drivers should decide when they're satisfied with their charge level
+                if vehicle.battery.current_soc >= vehicle.driver.target_soc:
                     # Complete charging
                     completed = charger.complete_session()
                     duration_min = (timestamp - session.start_time).total_seconds() / 60

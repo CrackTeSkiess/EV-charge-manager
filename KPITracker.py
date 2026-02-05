@@ -229,8 +229,8 @@ class KPITracker:
         )
         queue_occupancy_rate = total_queued / max(1, total_waiting_spots)
         
-        # Wait times
-        wait_times = self._collect_wait_times(highway)
+        # Wait times - use simulation timestamp
+        wait_times = self._collect_wait_times(highway, timestamp)
         avg_wait = np.mean(wait_times) if wait_times else 0.0
         max_wait = np.max(wait_times) if wait_times else 0.0
         
@@ -258,9 +258,9 @@ class KPITracker:
         time_step_hours = environment.config.time_step_minutes / 60
         throughput = vehicles_exited / max(0.001, time_step_hours)
         
-        # Trip duration (from completed trips)
+        # Trip duration (from completed trips - stored in environment, not highway)
         trip_durations = [
-            t['duration_minutes'] for t in highway.completed_trips[-50:]
+            t['duration_minutes'] for t in environment.completed_trips[-50:]
         ]
         avg_trip_duration = np.mean(trip_durations) if trip_durations else 0.0
         
@@ -359,19 +359,26 @@ class KPITracker:
             prev_state = self._station_previous_queues.get(area_id, {})
             prev_queue_ids = set(prev_state.get('queue_ids', []))
             current_queue_ids = {e.vehicle_id for e in area.queue if e.patience_score >= 0}
-            
+            current_charging_ids = {c.current_session.vehicle_id for c in area.chargers
+                                   if c.current_session is not None}
+
             # Find vehicles that left queue without starting charging
             left_queue = prev_queue_ids - current_queue_ids
             for vid in left_queue:
-                # Check if vehicle is now charging (promotion) or gone (abandonment)
+                # Check if vehicle was promoted to charging (not abandonment)
+                if vid in current_charging_ids:
+                    continue  # Vehicle started charging, not an abandonment
+                # Check if vehicle is still in highway and not charging
                 vehicle = highway.vehicles.get(vid)
                 if vehicle and vehicle.state.name != 'CHARGING':
                     quit_count += 1
             
-            # Update stored state
+            # Update stored state - use simulation time from highway
             self._station_previous_queues[area_id] = {
                 'queue_ids': list(current_queue_ids),
-                'timestamp': datetime.now()
+                'charging_ids': {c.current_session.vehicle_id for c in area.chargers
+                                if c.current_session is not None},
+                'timestamp': highway.current_time or datetime.now()
             }
         
         return quit_count
@@ -382,17 +389,18 @@ class KPITracker:
         affected_stations = {e.get('area_id') for e in abandonment_events}
         return len(affected_stations)
     
-    def _collect_wait_times(self, highway: Any) -> List[float]:
+    def _collect_wait_times(self, highway: Any, sim_time: Optional[datetime] = None) -> List[float]:
         """Collect current wait times for all queued vehicles."""
         wait_times = []
-        current_time = datetime.now()  # Would use sim time
-        
+        # Use simulation time if available, otherwise current highway time
+        current_time = sim_time or highway.current_time or datetime.now()
+
         for area in highway.charging_areas.values():
             for entry in area.queue:
                 if entry.patience_score >= 0 and hasattr(entry, 'entry_time'):
                     wait = (current_time - entry.entry_time).total_seconds() / 60
                     wait_times.append(wait)
-        
+
         return wait_times
     
     # ========================================================================

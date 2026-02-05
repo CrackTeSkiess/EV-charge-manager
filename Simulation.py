@@ -525,7 +525,7 @@ class Simulation:
         
         return {
             'vehicles_remaining': len(self.environment.active_vehicle_ids),
-            'total_spawned': self.environment.stats['total_entered'], # pyright: ignore[reportAttributeAccessIssue]
+            'total_spawned': self.environment.highway.stats['total_entered'],
             'total_completed': len(self.environment.completed_trips),
             'total_stranded': len(self.environment.failed_trips),
             'final_queue_states': {
