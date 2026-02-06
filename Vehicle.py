@@ -623,7 +623,7 @@ class Vehicle:
         else:
             speed_for_estimate = self.speed_kmh
             
-        # Use standardized method with 15% safety margin instead of 240%
+        # Use standardized method with 15% safety margin
         estimated_range = self._estimate_range_at_speed(speed_for_estimate, apply_safety=True)
         
         can_reach = estimated_range >= distance

@@ -10,6 +10,8 @@ from pathlib import Path
 
 from Simulation import Simulation, SimulationParameters, EarlyStopCondition
 from VehicleGenerator import TemporalDistribution
+from VisualizationTool import VisualizationTool
+from StationDataCollector import StationDataCollector
 
 
 def parse_args():
@@ -75,6 +77,10 @@ def parse_args():
         "--progress-interval", type=int, default=30,
         help="Print progress every N steps"
     )
+    parser.add_argument(
+        "--enable-station-tracker", action="store_true",
+        help="Enable station tracking output"
+    )
 
     return parser.parse_args()
 
@@ -96,7 +102,9 @@ def main():
         temporal_distribution=traffic_pattern,
         simulation_duration_hours=args.duration,
         random_seed=args.seed,
+        enable_station_tracking=args.enable_station_tracker,
         early_stop=EarlyStopCondition.disabled() 
+        
     )
 
     # Create and run simulation
@@ -112,6 +120,7 @@ def main():
     print()
 
     sim = Simulation(params)
+        
     result = sim.run(
         progress_interval=args.progress_interval,
         verbose=not args.quiet
@@ -165,13 +174,14 @@ def main():
     
     if not args.no_visualize:
         report_data = sim.generate_stranding_report(output_dir=str(output_dir))
-        print(f"\nStranding Report Summary:")
-        print(f"  Total strandings: {report_data['total_strandings']}")
-        print(f"  Stranding rate: {report_data['stranding_rate']:.2%}")
-        
-        print(f"\nTop Recommendations:")
-        for rec in report_data['recommendations'][:3]:
-            print(f"  [{rec['priority']}] {rec['message']}")
+        if report_data["total_strandings"] > 0:
+            print(f"\nStranding Report Summary:")
+            print(f"  Total strandings: {report_data['total_strandings']}")
+            print(f"  Stranding rate: {report_data['stranding_rate']:.2%}")
+            
+            print(f"\nTop Recommendations:")
+            for rec in report_data['recommendations'][:3]:
+                print(f"  [{rec['priority']}] {rec['message']}")
     
     return 0
 

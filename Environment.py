@@ -267,14 +267,20 @@ class Environment:
             initial_soc = random.uniform(0.40, 0.75)  # Mid
         else:
             initial_soc = random.uniform(0.75, 0.95)  # High
-
-        return Vehicle(
+            
+        vehicle = Vehicle(
             battery_capacity_kwh=capacity,
             initial_soc=initial_soc,
             driver_behavior=driver,
             initial_position_km=0.0,
             initial_speed_kmh=random.uniform(100, 130)
         )
+        
+        while not vehicle.can_physically_reach(vehicle.position_km):
+            print(vehicle.position_km)
+            vehicle.position_km += 1
+
+        return vehicle
 
     def _create_driver_by_type(self, behavior_type: str) -> DriverBehavior:
         """Create driver behavior profile based on type."""

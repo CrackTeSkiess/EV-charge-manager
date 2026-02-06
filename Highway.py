@@ -578,8 +578,8 @@ class Highway:
                 continue  # Skip all abandonment logic
 
             # Check 2: Can the vehicle reach the next station (or highway end) if it abandons?
-            can_reach_next = True
-            distance_to_target = 0
+            can_reach_next = False
+            distance_to_target = 1000
             
             if next_station_km is not None:
                 # Distance from current position to next station
@@ -1463,6 +1463,9 @@ class Highway:
                 driver_behavior=behavior,
                 initial_position_km=pos
             )
+            
+            while not vehicle.can_physically_reach(vehicle.position_km):
+                vehicle.position_km += 1
 
             self.spawn_vehicle(vehicle, entry_time=time)
             spawned.append(vehicle)

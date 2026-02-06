@@ -26,6 +26,7 @@ from VehicleGenerator import VehicleGenerator, GeneratorConfig, TemporalDistribu
 from VehicleTracker import VehicleTracker
 from KPITracker import KPITracker, KPIRecord
 from VisualizationTool import VisualizationTool, ChartConfig
+from StationDataCollector import StationDataCollector
 
 
 class StopReason(Enum):
@@ -288,6 +289,9 @@ class SimulationParameters:
 
     # KPI tracking
     kpi_log_interval: int = 1  # Log every N steps
+    
+    # Charger tracker
+    enable_station_tracking: bool = False
 
     def to_dict(self) -> Dict:
         """Convert to dictionary (for serialization)."""
@@ -310,6 +314,7 @@ class SimulationResult:
 
     # Data
     kpi_dataframe: pd.DataFrame
+    station_data : Dict[str, pd.DataFrame]
     summary_statistics: Dict[str, Any]
 
     # Configuration
@@ -377,6 +382,7 @@ class Simulation:
         self.environment: Optional[Environment] = None
         self.generator: Optional[VehicleGenerator] = None
         self.kpi_tracker: Optional[KPITracker] = None
+        self.collector: Optional[StationDataCollector] = None
 
         # State
         self.current_step: int = 0
@@ -418,6 +424,10 @@ class Simulation:
 
         # Create centralized vehicle tracker FIRST
         self.vehicle_tracker = VehicleTracker()
+        
+        # Create station data collector if enabled
+        if self.params.enable_station_tracking:
+            self.collector = StationDataCollector()
 
         # Create environment config
         env_config = SimulationConfig(
@@ -504,6 +514,7 @@ class Simulation:
                   f"{self.params.temporal_distribution.name}")
             print(f"Early stop: {self._early_stop_summary()}")
             print(f"Vehicle Tracker: ENABLED (centralized tracking)")
+            print(f"Station Tracker: {'ENABLED' if self.collector else 'DISABLED'}")
             print(f"{'='*70}\n")
 
         try:
@@ -529,6 +540,9 @@ class Simulation:
                 # Progress reporting
                 if verbose and step % progress_interval == 0 and step > 0:
                     self._print_progress(step, max_steps)
+                    
+                if self.collector is not None:
+                    self.collector.record_all_stations(self.environment.highway, self.environment.current_time)  # pyright: ignore[reportOptionalMemberAccess]
 
                 # Callback
                 if self.on_step:
@@ -558,6 +572,7 @@ class Simulation:
             final_time=self.environment.current_time if self.environment else datetime.now(),
             wall_clock_time_seconds=wall_time,
             kpi_dataframe=self.kpi_tracker.get_dataframe(),  # pyright: ignore[reportOptionalMemberAccess]
+            station_data=self.collector.get_station_dataframes() if self.collector else None, # pyright: ignore[reportArgumentType]
             summary_statistics=self.kpi_tracker.get_summary_stats(),  # pyright: ignore[reportOptionalMemberAccess]
             parameters=self.params,
             final_environment_state=self._get_final_state(),
@@ -1196,16 +1211,17 @@ class Simulation:
     # UTILITY METHODS
     # ========================================================================
 
-    def visualize(self, output_dir: str = "./simulation_output") -> List[str]:
+    def visualize(self, output_dir: str = "./simulation_output") -> List[str]: # pyright: ignore[reportArgumentType]
         """
         Generate visualizations from completed simulation.
         Must be called after run().
         """
+
         if self.result is None:
             raise RuntimeError("Must run simulation before visualizing")
 
         viz = VisualizationTool(self.result.kpi_dataframe)
-        return viz.generate_full_report(output_dir)
+        return viz.generate_full_report(output_dir, self.collector.get_station_dataframes() if self.collector else None)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess]
 
     def get_kpi_dataframe(self) -> pd.DataFrame:
         """Get KPI DataFrame (available after run())."""
@@ -1226,99 +1242,3 @@ class Simulation:
         if self.result:
             status = f"completed ({self.stop_reason.name})"  # pyright: ignore[reportOptionalMemberAccess]
         return f"Simulation({self.id}, {status}, steps={self.current_step})"
-
-
-# =============================================================================
-# EXAMPLE USAGE
-# =============================================================================
-
-def demo():
-    """Demonstrate Simulation functionality."""
-    print("=" * 70)
-    print("SIMULATION ORCHESTRATOR DEMO")
-    print("=" * 70)
-
-    # Create parameters
-    params = SimulationParameters(
-        highway_length_km=200.0,
-        num_charging_areas=3,
-        charging_area_positions=[50.0, 100.0, 150.0],
-        chargers_per_area=4,
-        waiting_spots_per_area=6,
-        vehicles_per_hour=120.0,  # High traffic to trigger early stop
-        temporal_distribution=TemporalDistribution.RUSH_HOUR,  # pyright: ignore[reportAttributeAccessIssue]
-        simulation_duration_hours=4.0,  # 4 hours
-        time_step_minutes=1.0,
-        random_seed=42,
-        early_stop=EarlyStopCondition(
-            max_consecutive_strandings=5,  # Stop if many strandings
-            abandonment_rate_threshold=0.25,  # Stop if 25% abandon
-            max_queue_occupancy=1.2,  # Stop if 120% capacity sustained
-            convergence_patience=200  # Or if converged
-        )
-    )
-
-    # Create and run simulation
-    sim = Simulation(params)
-
-    # Optional: Set callbacks
-    def on_step(step, info):
-        if step % 120 == 0:  # Every 2 hours simulated
-            print(f"  [Callback] Step {step}: {info['vehicles']} vehicles active")
-
-    def on_stop(reason, message):
-        print(f"  [Callback] Stopped: {reason.name}")
-
-    sim.on_step = on_step
-    sim.on_stop = on_stop
-
-    # Run simulation
-    result = sim.run(progress_interval=30, verbose=True)
-
-    # Access results
-    print(f"\n{'='*70}")
-    print("RESULT ACCESS DEMO")
-    print(f"{'='*70}")
-
-    print(f"\nResult object: {result}")
-    print(f"KPI DataFrame shape: {result.kpi_dataframe.shape}")
-    print(f"Columns: {list(result.kpi_dataframe.columns)[:5]}...")
-
-    # Show required KPIs
-    print(f"\nRequired KPIs (last 5 steps):")
-    print(result.kpi_dataframe[['step', 'timestamp', 'cars_quit_waiting',
-                               'cars_zero_battery']].tail())
-
-    # Summary statistics
-    print(f"\nSummary statistics:")
-    for key, value in list(result.summary_statistics.items())[:8]:
-        if isinstance(value, float):
-            print(f"  {key}: {value:.3f}")
-        else:
-            print(f"  {key}: {value}")
-
-    # Access vehicle tracker
-    tracker = sim.get_vehicle_tracker()
-    if tracker:
-        print(f"\nVehicle Tracker state counts: {tracker.get_state_counts()}")
-
-    # Save results
-    print(f"\nSaving results...")
-    save_path = result.save("./simulation_output")
-    print(f"Saved to: {save_path}")
-
-    # Visualize (optional - requires matplotlib)
-    try:
-        print(f"\nGenerating visualizations...")
-        viz_files = sim.visualize("./simulation_output")
-        print(f"Generated: {len(viz_files)} visualizations")
-    except Exception as e:
-        print(f"Visualization skipped: {e}")
-
-    print(f"\n{'='*70}")
-    print("DEMO COMPLETE")
-    print(f"{'='*70}")
-
-
-if __name__ == "__main__":
-    demo()

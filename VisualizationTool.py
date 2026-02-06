@@ -61,6 +61,7 @@ class VisualizationTool:
         self.df = kpi_dataframe
         self.config = config or ChartConfig()
         self.id = str(uuid.uuid4())[:8]
+        self._station_data: Optional[Dict[str, pd.DataFrame]] = None
         
         # Color schemes
         self.colors = {
@@ -86,10 +87,329 @@ class VisualizationTool:
     def set_dataframe(self, df: pd.DataFrame) -> None:
         """Update the KPI DataFrame."""
         self.df = df.copy()
+        
+    def set_station_data(self, station_data: Dict[str, pd.DataFrame]) -> None:
+        """
+        Set station data for visualization.
+        
+        This allows storing station tracking data collected during simulation
+        for later visualization.
+        
+        Args:
+            station_data: Dict mapping station_id to DataFrame with columns:
+                         ['timestamp', 'occupancy', 'queue_length', 'total_chargers', 'waiting_spots']
+        """
+        self._station_data = station_data
     
     # ========================================================================
     # CORE TIME SERIES PLOTS
     # ========================================================================
+
+    def plot_charging_area_occupancy(self, station_data: Dict[str, pd.DataFrame] = None,  # pyright: ignore[reportArgumentType]
+                                     **kwargs) -> plt.Figure: # pyright: ignore[reportPrivateImportUsage]
+        """
+        Plot charger occupancy and queue length over time for each charging area.
+        
+        Creates a multi-panel figure showing for each station:
+        - Charger occupancy (number of chargers in use over time)
+        - Queue length (number of vehicles waiting over time)
+        - Combined utilization view
+        
+        Args:
+            station_data: Dict mapping station_id to DataFrame with columns:
+                         ['timestamp', 'occupancy', 'queue_length', 'total_chargers', 'waiting_spots']
+                         If None, uses data set via set_station_data()
+            **kwargs: Additional configuration options
+        
+        Returns:
+            matplotlib Figure object
+        """
+        config = self._merge_config(kwargs)
+        
+        # Use stored data if none provided
+        if station_data is None:
+            station_data = self._station_data
+        
+        # If no station data available, we can't create the visualization
+        if station_data is None or not station_data:
+            return self._empty_figure("No charging area data available.\n"
+                                    "Use set_station_data() or pass station_data parameter.")
+        
+        num_stations = len(station_data)
+        if num_stations == 0:
+            return self._empty_figure("No charging stations to display")
+        
+        # Calculate grid layout - aim for 2 columns, or 1 if only 1-2 stations
+        n_cols = 2 if num_stations >= 2 else 1
+        n_rows = (num_stations + n_cols - 1) // n_cols
+        
+        # Create figure with subplots for each station
+        fig, axes = plt.subplots(n_rows, n_cols, 
+                                figsize=(max(14, 7 * n_cols), 5 * n_rows), 
+                                dpi=config.dpi,
+                                squeeze=False)
+        fig.patch.set_facecolor(self.colors['background'])
+        
+        # Flatten axes for easier iteration
+        axes_flat = axes.flatten()
+        
+        for idx, (station_id, df) in enumerate(station_data.items()):
+            if idx >= len(axes_flat):
+                break
+                
+            ax = axes_flat[idx]
+            ax.set_facecolor(self.colors['background'])
+            
+            # Ensure we have the required columns
+            if 'timestamp' not in df.columns:
+                # Try to use index as timestamp
+                df = df.copy()
+                df['timestamp'] = df.index
+            
+            time_index = pd.to_datetime(df['timestamp']) if not pd.api.types.is_datetime64_any_dtype(df['timestamp']) else df['timestamp']
+            
+            # Get data columns with fallbacks
+            occupancy = df.get('occupancy', df.get('total_charging', pd.Series([0] * len(df))))
+            queue = df.get('queue_length', df.get('total_queued', pd.Series([0] * len(df))))
+            total_chargers = df.get('total_chargers', pd.Series([4] * len(df)))  # Default 4
+            waiting_spots = df.get('waiting_spots', pd.Series([6] * len(df)))    # Default 6
+            
+            # Calculate occupancy rate
+            occupancy_rate = (occupancy / total_chargers * 100).fillna(0)
+            queue_rate = (queue / waiting_spots * 100).fillna(0)
+            
+            # Primary axis: Occupancy
+            ax.fill_between(time_index, occupancy, alpha=0.3, color=self.colors['success'], 
+                          label='Chargers Occupied')
+            line1, = ax.plot(time_index, occupancy, color=self.colors['success'], 
+                           linewidth=2, label='Chargers Occupied')
+            
+            # Mark full occupancy periods
+            full_occupancy = occupancy >= total_chargers
+            if full_occupancy.any():
+                max_chargers_val = total_chargers.max() if hasattr(total_chargers, 'max') else total_chargers.iloc[0]
+                ax.fill_between(time_index, 0, max_chargers_val, 
+                              where=full_occupancy, alpha=0.2, color=self.colors['danger'],
+                              label='Full Capacity')
+            
+            ax.set_ylabel('Chargers Occupied', fontsize=config.label_fontsize, 
+                         color=self.colors['success'], fontweight='bold')
+            ax.tick_params(axis='y', labelcolor=self.colors['success'])
+            max_val = max(total_chargers.max() if hasattr(total_chargers, 'max') else total_chargers.iloc[0], 
+                         occupancy.max()) * 1.1
+            ax.set_ylim(0, max_val)
+            
+            # Secondary axis: Queue
+            ax2 = ax.twinx()
+            ax2.fill_between(time_index, queue, alpha=0.3, color=self.colors['warning'], 
+                           label='Queue Length')
+            line2, = ax2.plot(time_index, queue, color=self.colors['warning'], 
+                            linewidth=2, linestyle='--', label='Queue Length')
+            
+            # Mark queue overflow
+            queue_full = queue >= waiting_spots
+            if queue_full.any():
+                max_waiting_val = waiting_spots.max() if hasattr(waiting_spots, 'max') else waiting_spots.iloc[0]
+                ax2.fill_between(time_index, 0, max_waiting_val, 
+                               where=queue_full, alpha=0.2, color=self.colors['danger'],
+                               label='Queue Full')
+            
+            ax2.set_ylabel('Queue Length', fontsize=config.label_fontsize, 
+                          color=self.colors['warning'], fontweight='bold')
+            ax2.tick_params(axis='y', labelcolor=self.colors['warning'])
+            max_queue_val = max(waiting_spots.max() if hasattr(waiting_spots, 'max') else waiting_spots.iloc[0], 
+                               queue.max()) * 1.2
+            ax2.set_ylim(0, max_queue_val)
+            
+            # Title with summary statistics
+            avg_occupancy = occupancy_rate.mean()
+            max_queue = queue.max()
+            peak_time = time_index[queue.idxmax()] if queue.max() > 0 else None
+            
+            title = f'Station {station_id}'
+            if hasattr(df, 'attrs') and 'name' in df.attrs:
+                title = df.attrs['name']
+            
+            subtitle = f'Avg Util: {avg_occupancy:.1f}% | Max Queue: {int(max_queue)}'
+            if peak_time is not None:
+                subtitle += f' at {peak_time.strftime("%H:%M")}'
+            
+            ax.set_title(f'{title}\n{subtitle}', fontsize=config.title_fontsize, 
+                        color=self.colors['text'], fontweight='bold')
+            
+            # Format x-axis
+            ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))
+            ax.xaxis.set_major_locator(HourLocator(interval=max(1, len(time_index) // 8)))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+            ax.tick_params(axis='x', colors=self.colors['text'])
+            
+            # Combined legend
+            lines = [line1, line2]
+            labels = ['Charging', 'Queue']
+            ax.legend(lines, labels, loc='upper left', fontsize=config.tick_fontsize)
+            
+            # Add capacity indicators as horizontal lines
+            chargers_val = total_chargers.iloc[0] if len(total_chargers) > 0 else 4
+            ax.axhline(y=chargers_val, color=self.colors['success'], linestyle=':', alpha=0.5)
+            waiting_val = waiting_spots.iloc[0] if len(waiting_spots) > 0 else 6
+            ax2.axhline(y=waiting_val, color=self.colors['warning'], linestyle=':', alpha=0.5)
+        
+        # Hide unused subplots
+        for idx in range(len(station_data), len(axes_flat)):
+            axes_flat[idx].set_visible(False)
+        
+        # Overall title
+        fig.suptitle('Charging Area Occupancy and Queue Over Time', 
+                    fontsize=config.title_fontsize + 2, fontweight='bold',
+                    color=self.colors['text'], y=0.995)
+        
+        plt.tight_layout()
+        
+        if config.save_path:
+            plt.savefig(f"{config.save_path}_station_occupancy.png", 
+                       dpi=config.dpi, bbox_inches='tight',
+                       facecolor=self.colors['background'])
+        
+        if config.show_plot:
+            plt.show()
+        
+        return fig
+
+    def plot_station_utilization_summary(self, station_data: Dict[str, pd.DataFrame] = None, # pyright: ignore[reportArgumentType]
+                                        **kwargs) -> plt.Figure: # pyright: ignore[reportPrivateImportUsage]
+        """
+        Create a summary heatmap showing utilization across all stations over time.
+        
+        Args:
+            station_data: Dict mapping station_id to DataFrame with occupancy data.
+                         If None, uses data set via set_station_data()
+            **kwargs: Configuration options
+            
+        Returns:
+            matplotlib Figure object
+        """
+        config = self._merge_config(kwargs)
+        
+        # Use stored data if none provided
+        if station_data is None:
+            station_data = self._station_data
+            
+        if station_data is None or not station_data:
+            return self._empty_figure("No station data available for summary.\n"
+                                    "Use set_station_data() or pass station_data parameter.")
+        
+        fig, axes = plt.subplots(2, 1, figsize=(14, 10), dpi=config.dpi,
+                                gridspec_kw={'height_ratios': [2, 1]})
+        fig.patch.set_facecolor(self.colors['background'])
+        
+        # Prepare data for heatmap
+        stations = list(station_data.keys())
+        
+        # Get common time index
+        all_times = None
+        for df in station_data.values():
+            times = pd.to_datetime(df['timestamp']) if 'timestamp' in df.columns else df.index
+            if all_times is None:
+                all_times = times
+            else:
+                all_times = all_times.union(times) # pyright: ignore[reportCallIssue, reportArgumentType]
+        
+        all_times = all_times.sort_values() # pyright: ignore[reportOptionalMemberAccess]
+        
+        # Create matrices for heatmap
+        occupancy_matrix = []
+        queue_matrix = []
+        
+        for station_id in stations:
+            df = station_data[station_id]
+            times = pd.to_datetime(df['timestamp']) if 'timestamp' in df.columns else df.index
+            
+            # Reindex to common time grid
+            df_indexed = df.set_index(times).reindex(all_times, method='ffill').fillna(0)
+            
+            occupancy = df_indexed.get('occupancy', df_indexed.get('total_charging', 0))
+            total_chargers = df_indexed.get('total_chargers', 4)
+            occupancy_rate = (occupancy / total_chargers * 100).fillna(0) # pyright: ignore[reportAttributeAccessIssue]
+            
+            queue = df_indexed.get('queue_length', df_indexed.get('total_queued', 0))
+            waiting_spots = df_indexed.get('waiting_spots', 6)
+            queue_rate = (queue / waiting_spots * 100).fillna(0) # pyright: ignore[reportAttributeAccessIssue]
+            
+            occupancy_matrix.append(occupancy_rate.values)
+            queue_matrix.append(queue_rate.values)
+        
+        occupancy_matrix = np.array(occupancy_matrix)
+        queue_matrix = np.array(queue_matrix)
+        
+        # Plot 1: Charger Occupancy Heatmap
+        ax1 = axes[0]
+        ax1.set_facecolor(self.colors['background'])
+        
+        # Sample time points for x-axis labels (avoid overcrowding)
+        n_time_points = len(all_times)
+        step = max(1, n_time_points // 20)
+        
+        im1 = ax1.imshow(occupancy_matrix, aspect='auto', cmap='YlOrRd', 
+                        interpolation='nearest', vmin=0, vmax=100)
+        
+        ax1.set_yticks(range(len(stations)))
+        ax1.set_yticklabels([f'Station {s}' for s in stations])
+        ax1.set_xticks(range(0, n_time_points, step))
+        ax1.set_xticklabels([all_times[i].strftime('%H:%M') for i in range(0, n_time_points, step)], 
+                           rotation=45, ha='right')
+        ax1.set_title('Charger Occupancy Rate (%)', fontsize=config.title_fontsize, 
+                     fontweight='bold', color=self.colors['text'])
+        ax1.set_xlabel('Time', fontsize=config.label_fontsize, color=self.colors['text'])
+        
+        cbar1 = plt.colorbar(im1, ax=ax1, pad=0.02)
+        cbar1.set_label('Occupancy %', color=self.colors['text'])
+        
+        # Add contour lines for high utilization
+        ax1.contour(occupancy_matrix, levels=[80, 95], colors=['orange', 'red'], 
+                   linewidths=2, linestyles='--')
+        
+        # Plot 2: Queue Heatmap
+        ax2 = axes[1]
+        ax2.set_facecolor(self.colors['background'])
+        
+        vmax_queue = min(100, queue_matrix.max()) if queue_matrix.max() > 0 else 100
+        im2 = ax2.imshow(queue_matrix, aspect='auto', cmap='Reds', 
+                        interpolation='nearest', vmin=0, vmax=vmax_queue)
+        
+        ax2.set_yticks(range(len(stations)))
+        ax2.set_yticklabels([f'Station {s}' for s in stations])
+        ax2.set_xticks(range(0, n_time_points, step))
+        ax2.set_xticklabels([all_times[i].strftime('%H:%M') for i in range(0, n_time_points, step)], 
+                           rotation=45, ha='right')
+        ax2.set_title('Queue Occupancy Rate (%)', fontsize=config.title_fontsize, 
+                     fontweight='bold', color=self.colors['text'])
+        ax2.set_xlabel('Time', fontsize=config.label_fontsize, color=self.colors['text'])
+        
+        cbar2 = plt.colorbar(im2, ax=ax2, pad=0.02)
+        cbar2.set_label('Queue %', color=self.colors['text'])
+        
+        # Highlight queue overflow (>100%)
+        if queue_matrix.max() > 100:
+            overflow_mask = queue_matrix > 100
+            # Overlay hatch pattern for overflow
+            for i in range(len(stations)):
+                for j in range(n_time_points):
+                    if overflow_mask[i, j]:
+                        ax2.add_patch(plt.Rectangle((j-0.5, i-0.5), 1, 1,  # pyright: ignore[reportPrivateImportUsage]
+                                                   fill=False, edgecolor='red', 
+                                                   hatch='///', alpha=0.5))
+        
+        plt.tight_layout()
+        
+        if config.save_path:
+            plt.savefig(f"{config.save_path}_station_utilization_heatmap.png", 
+                       dpi=config.dpi, bbox_inches='tight',
+                       facecolor=self.colors['background'])
+        
+        if config.show_plot:
+            plt.show()
+        
+        return fig
     
     def plot_live_stranding_map(self, highway_length_km: float, 
                             station_positions: List[float],
@@ -277,7 +597,7 @@ class VisualizationTool:
         if positions:
             # Add slight vertical jitter for visibility
             jitter = np.random.uniform(-0.15, 0.15, len(positions))
-            colors = plt.cm.Reds(np.linspace(0.4, 1, len(positions)))
+            colors = plt.cm.Reds(np.linspace(0.4, 1, len(positions))) # pyright: ignore[reportAttributeAccessIssue]
             
             for i, (pos, color) in enumerate(zip(positions, colors)):
                 ax.scatter([pos], [jitter[i]], s=150, c=[color], 
@@ -353,7 +673,7 @@ class VisualizationTool:
                                 alpha=0.7, edgecolor=self.colors['text'])
         
         # Color bars by severity
-        for i, (patch, left_edge) in enumerate(zip(patches, bins[:-1])):
+        for i, (patch, left_edge) in enumerate(zip(patches, bins[:-1])): # pyright: ignore[reportArgumentType, reportGeneralTypeIssues]
             if left_edge < 10:
                 patch.set_color(self.colors['success'])  # Close to station
             elif left_edge < 30:
@@ -364,7 +684,7 @@ class VisualizationTool:
         # Statistics lines
         mean_dist = np.mean(distances)
         median_dist = np.median(distances)
-        ax.axvline(mean_dist, color=self.colors['primary'], linestyle='-', 
+        ax.axvline(mean_dist, color=self.colors['primary'], linestyle='-',  # pyright: ignore[reportArgumentType]
                 linewidth=2, label=f'Mean: {mean_dist:.1f} km')
         ax.axvline(median_dist, color=self.colors['secondary'], linestyle='--',
                 linewidth=2, label=f'Median: {median_dist:.1f} km')
@@ -378,7 +698,7 @@ class VisualizationTool:
         ax.legend(fontsize=config.tick_fontsize)
         ax.tick_params(colors=self.colors['text'])
 
-    def _plot_temporal_distribution(self, ax: plt.Axes, data: Dict, config: ChartConfig):
+    def _plot_temporal_distribution(self, ax: plt.Axes, data: Dict, config: ChartConfig): # pyright: ignore[reportPrivateImportUsage]
         """Plot when strandings occur throughout the simulation."""
         ax.set_facecolor(self.colors['background'])
         
@@ -414,7 +734,7 @@ class VisualizationTool:
             ax.text(0.5, 0.5, 'No valid time data', ha='center', va='center',
                 transform=ax.transAxes, fontsize=12)
 
-    def _plot_driver_breakdown(self, ax: plt.Axes, data: Dict, config: ChartConfig):
+    def _plot_driver_breakdown(self, ax: plt.Axes, data: Dict, config: ChartConfig): # pyright: ignore[reportPrivateImportUsage]
         """Break down strandings by driver type."""
         ax.set_facecolor(self.colors['background'])
         
@@ -461,7 +781,7 @@ class VisualizationTool:
                     ha='center', va='bottom', fontsize=9,
                     color=self.colors['text'])
 
-    def _plot_battery_analysis(self, ax: plt.Axes, data: Dict, config: ChartConfig):
+    def _plot_battery_analysis(self, ax: plt.Axes, data: Dict, config: ChartConfig): # pyright: ignore[reportPrivateImportUsage]
         """Analyze battery characteristics of stranded vehicles."""
         ax.set_facecolor(self.colors['background'])
         
@@ -1183,33 +1503,76 @@ class VisualizationTool:
         ax.axis('off')
         return fig
     
-    def generate_full_report(self, output_dir: str = "./visualization_output") -> List[str]:
+    def generate_full_report(self, output_dir: str = "./visualization_output", 
+                            station_data: Dict[str, pd.DataFrame] = None) -> List[str]: # pyright: ignore[reportArgumentType]
         """
         Generate all visualizations and save to directory.
+        
+        Args:
+            output_dir: Directory to save visualizations
+            station_data: Optional dict mapping station_id to DataFrame with occupancy data.
+                         If provided, charging area visualizations will be generated.
+            
+        Returns:
+            List of generated file paths
         """
         import os
         os.makedirs(output_dir, exist_ok=True)
-        
+
         base_path = f"{output_dir}/simulation_{self.id}"
-        
+
         generated = []
-        
+
         # Required KPIs
-        self.plot_required_kpis(save_path=base_path, show_plot=False)
-        generated.append(f"{base_path}_required_kpis.png")
-        
+        try:
+            self.plot_required_kpis(save_path=base_path, show_plot=False)
+            generated.append(f"{base_path}_required_kpis.png")
+        except Exception as e:
+            print(f"Warning: Could not generate required KPIs plot: {e}")
+
         # System overview
-        self.plot_system_overview(save_path=base_path, show_plot=False)
-        generated.append(f"{base_path}_overview.png")
-        
+        try:
+            self.plot_system_overview(save_path=base_path, show_plot=False)
+            generated.append(f"{base_path}_overview.png")
+        except Exception as e:
+            print(f"Warning: Could not generate system overview: {e}")
+
         # Distributions
-        self.plot_distributions(save_path=base_path, show_plot=False)
-        generated.append(f"{base_path}_distributions.png")
-        
+        try:
+            self.plot_distributions(save_path=base_path, show_plot=False)
+            generated.append(f"{base_path}_distributions.png")
+        except Exception as e:
+            print(f"Warning: Could not generate distributions: {e}")
+
         # Correlation
-        self.plot_correlation_heatmap(save_path=base_path, show_plot=False)
-        generated.append(f"{base_path}_correlation.png")
+        try:
+            self.plot_correlation_heatmap(save_path=base_path, show_plot=False)
+            generated.append(f"{base_path}_correlation.png")
+        except Exception as e:
+            print(f"Warning: Could not generate correlation heatmap: {e}")
+
+        # NEW: Charging area occupancy visualizations
+        if station_data is None:
+            station_data = getattr(self, '_station_data', None)
         
+        if station_data:
+            try:
+                self.plot_charging_area_occupancy(station_data, save_path=base_path, show_plot=False)
+                generated.append(f"{base_path}_station_occupancy.png")
+                print(f"  Generated station occupancy plot")
+            except Exception as e:
+                print(f"Warning: Could not generate station occupancy plot: {e}")
+            
+            try:
+                self.plot_station_utilization_summary(station_data, save_path=base_path, show_plot=False)
+                generated.append(f"{base_path}_station_utilization_heatmap.png")
+                print(f"  Generated station utilization heatmap")
+            except Exception as e:
+                print(f"Warning: Could not generate station utilization heatmap: {e}")
+        else:
+            print("Note: No station data provided - skipping charging area visualizations")
+            print("      Pass station_data to generate_full_report() or use set_station_data()")
+
         print(f"Generated {len(generated)} visualizations in {output_dir}")
         return generated
     
