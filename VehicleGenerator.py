@@ -37,7 +37,7 @@ class VehicleTypeSpec:
     battery_capacity_kwh: float
     weight: float = 1.0  # Relative frequency
     soc_distribution: Callable[[], float] = field(
-        default_factory=lambda: lambda: random.uniform(0.3, 0.8)
+        default_factory=lambda: lambda: random.uniform(0.5, 0.9)
     )
 
 

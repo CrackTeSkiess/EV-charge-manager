@@ -30,7 +30,7 @@ class Battery:
     """
     Electric vehicle battery with state-of-charge management.
     """
-    capacity_kwh: float = 60.0          # Total capacity
+    capacity_kwh: float = 70.0          # Total capacity
     current_soc: float = 0.8             # Current state of charge (0-1)
     min_operating_soc: float = 0.05      # Absolute minimum before damage
     usable_soc_range: Tuple[float, float] = (0.1, 1.0)  # Usable window
@@ -355,7 +355,7 @@ class Vehicle:
         
         # Apply driver behavior modifier (aggressive driving)
         aggression_penalty = 1.0 + (self.driver.acceleration_aggression - 0.5) * 0.3
-        
+                
         return consumption_kwh_per_km * aggression_penalty
     
     def _motor_efficiency(self, speed_kmh: float) -> float:
@@ -457,7 +457,7 @@ class Vehicle:
         current_consumption = self.calculate_consumption_rate(self.speed_kmh)
         return self.battery.estimate_range_km(current_consumption)
     
-    def can_reach_station(self, station_position_km: float, 
+    def can_reach_station(self, station_position_km: float,
                          buffer_km: Optional[float] = None) -> bool:
         """Check if vehicle can reach a station with safety buffer."""
         buffer = buffer_km or self.driver.buffer_margin_km
@@ -465,6 +465,116 @@ class Vehicle:
         required_range = distance + buffer
         return self.get_range_estimate() >= required_range
     
+    def can_physically_reach(self, position_km: float, at_highway_speed: bool = True) -> bool:
+        """Check if vehicle can physically reach a position (no buffer, just raw range).
+        
+        Args:
+            position_km: Target position to reach
+            at_highway_speed: If True, calculate range at driver's preferred highway speed
+                            (more realistic for post-charging driving). If False, use current speed.
+        """
+        distance = abs(position_km - self.position_km)
+        
+        if at_highway_speed:
+            # Use driver's preferred speed for realistic range estimate
+            # This accounts for the fact that vehicle will accelerate to highway speed after exiting
+            speed_for_estimate = self.driver.speed_preference_kmh
+        else:
+            speed_for_estimate = self.speed_kmh
+            
+        consumption = self.calculate_consumption_rate(speed_for_estimate)
+        estimated_range = self.battery.estimate_range_km(consumption*1.2)  # Add 20% buffer for safety
+        
+        return estimated_range >= distance
+
+    '''
+    def can_physically_reach(self, position_km: float) -> bool:
+        """Check if vehicle can physically reach a position (no buffer, just raw range)."""
+        distance = abs(position_km - self.position_km)
+        return self.get_range_estimate() >= distance
+    '''
+
+    def must_stop_at_station(self, current_station_km: float,
+                             next_station_km: Optional[float],
+                             highway_end_km: Optional[float] = None) -> bool:
+        """
+        Determine if vehicle MUST stop at this station to avoid stranding.
+        Returns True if skipping this station would result in stranding.
+        """
+        # First, can we even reach this station?
+        if not self.can_physically_reach(current_station_km, at_highway_speed=False):
+            return True  # Must try to stop here, already in trouble
+
+        # If there's a next station, check if we can reach it after passing this one
+        if next_station_km is not None:
+            # Calculate remaining range if we drive to current station and pass it
+            distance_to_current = abs(current_station_km - self.position_km)
+            
+            # Use highway speed for realistic estimate of range after passing
+            consumption_at_highway = self.calculate_consumption_rate(self.driver.speed_preference_kmh)
+            range_at_highway = self.battery.estimate_range_km(consumption_at_highway)
+            remaining_range_after_current = range_at_highway - distance_to_current
+            
+            distance_current_to_next = abs(next_station_km - current_station_km)
+
+            # Can we make it from current station to next station?
+            if remaining_range_after_current < distance_current_to_next:
+                return True  # Must stop here or we strand before next station
+
+        # If no next station, check if we can reach highway end
+        if next_station_km is None and highway_end_km is not None:
+            distance_to_current = abs(current_station_km - self.position_km)
+            
+            consumption_at_highway = self.calculate_consumption_rate(self.driver.speed_preference_kmh)
+            range_at_highway = self.battery.estimate_range_km(consumption_at_highway)
+            remaining_range_after_current = range_at_highway - distance_to_current
+            
+            distance_current_to_end = abs(highway_end_km - current_station_km)
+
+            if remaining_range_after_current < distance_current_to_end:
+                return True  # Must stop here or we strand before highway end
+
+        return False  # Safe to skip if we want to
+
+    '''
+    def must_stop_at_station(self, current_station_km: float,
+                             next_station_km: Optional[float],
+                             highway_end_km: Optional[float] = None) -> bool:
+        """
+        Determine if vehicle MUST stop at this station to avoid stranding.
+        Returns True if skipping this station would result in stranding.
+
+        A rational driver will always stop if:
+        - They cannot physically reach the next station (no buffer needed - survival mode)
+        - They cannot physically reach the highway end if no next station exists
+        """
+        # First, can we even reach this station?
+        if not self.can_physically_reach(current_station_km):
+            return True  # Must try to stop here, already in trouble
+
+        # If there's a next station, check if we can reach it after passing this one
+        if next_station_km is not None:
+            # Calculate remaining range if we drive to current station and pass it
+            distance_to_current = abs(current_station_km - self.position_km)
+            remaining_range_after_current = self.get_range_estimate() - distance_to_current
+            distance_current_to_next = abs(next_station_km - current_station_km)
+
+            # Can we make it from current station to next station?
+            if remaining_range_after_current < distance_current_to_next:
+                return True  # Must stop here or we strand before next station
+
+        # If no next station, check if we can reach highway end
+        if next_station_km is None and highway_end_km is not None:
+            distance_to_current = abs(current_station_km - self.position_km)
+            remaining_range_after_current = self.get_range_estimate() - distance_to_current
+            distance_current_to_end = abs(highway_end_km - current_station_km)
+
+            if remaining_range_after_current < distance_current_to_end:
+                return True  # Must stop here or we strand before highway end
+
+        return False  # Safe to skip if we want to
+    '''
+
     def needs_charging(self, next_station_km: Optional[float] = None) -> bool:
         """Determine if vehicle needs to charge now."""
         # Critical battery
@@ -605,52 +715,93 @@ class Vehicle:
         env.setdefault('queue_position', 99)
         env.setdefault('estimated_wait', 30)
         env.setdefault('alternative_available', False)
-        
+        env.setdefault('highway_end_km', None)
+        env.setdefault('can_reach_next_station', True)  # For abandonment decisions
+
         # Physics update (unless charging/queued)
         if self.state in [VehicleState.CRUISING, VehicleState.APPROACHING,
                          VehicleState.EXITING]:
 
             speed_limit = env['speed_limit_kmh']
             traffic_speed = env.get('traffic_speed_kmh')  # Optional, can be None
-            
+
             success = self.update_physics(time_step_minutes, speed_limit, traffic_speed)
-            
+
             if not success:
                 result['stranded'] = True
                 return result
-            
+
             # Check for station approach and proactive charging decision
             upcoming_stations = env['upcoming_stations']
+            highway_end_km = env.get('highway_end_km')
 
-            # Proactive charging: if SOC is low, find a reachable station
-            if self.needs_charging() and self.state == VehicleState.CRUISING:
-                for station in upcoming_stations:
-                    distance = station['location_km'] - self.position_km
-                    if distance > 0 and self.can_reach_station(station['location_km']):
-                        # Set target and start approaching
+            # Sort stations by distance (closest first)
+            stations_ahead = [s for s in upcoming_stations
+                            if s['location_km'] > self.position_km]
+            stations_ahead.sort(key=lambda s: s['location_km'])
+
+            # Proactive charging decision
+            if self.state == VehicleState.CRUISING and stations_ahead:
+                for i, station in enumerate(stations_ahead):
+                    station_km = station['location_km']
+                    # Find the next station after this one (if any)
+                    next_station_km = stations_ahead[i + 1]['location_km'] if i + 1 < len(stations_ahead) else None
+
+                    # Check if we can physically reach this station
+                    if not self.can_physically_reach(station_km):
+                        continue  # Can't reach this one, try further ones (shouldn't happen)
+
+                    # MUST STOP: Check if skipping this station would strand us
+                    must_stop = self.must_stop_at_station(station_km, next_station_km, highway_end_km)
+
+                    # WANT TO STOP: Check comfort-based charging need
+                    wants_to_stop = self.needs_charging(next_station_km)
+
+                    if must_stop or wants_to_stop:
                         self.target_station_id = station.get('area_id', station.get('id'))
+                        reason = "must charge (no alternative)" if must_stop else "seeking charging"
                         self.set_state(VehicleState.APPROACHING, timestamp,
-                                     f"seeking charging at {self.target_station_id}")
+                                     f"{reason} at {self.target_station_id}")
                         result['state_changed'] = True
                         result['needs_decision'] = True
                         result['decision_options'] = upcoming_stations
+                        result['must_stop'] = must_stop  # Signal to Highway that this is mandatory
                         break
 
             # Check if within 10km of any station (normal approach trigger)
-            for station in upcoming_stations:
+            for i, station in enumerate(stations_ahead):
                 distance = station['location_km'] - self.position_km
                 if 0 < distance <= 10.0:  # Within 10km
                     if self.state != VehicleState.APPROACHING:
                         station_id = station.get('area_id', station.get('id', 'unknown'))
+                        next_station_km = stations_ahead[i + 1]['location_km'] if i + 1 < len(stations_ahead) else None
+
+                        # Check if this is a must-stop situation
+                        must_stop = self.must_stop_at_station(station['location_km'], next_station_km, highway_end_km)
+                        if must_stop:
+                            self.target_station_id = station_id
+
                         self.set_state(VehicleState.APPROACHING, timestamp,
                                      f"approaching {station_id}")
                         result['state_changed'] = True
                     break
 
             # Check if needs charging decision
-            if self.state == VehicleState.APPROACHING and self.needs_charging():
-                result['needs_decision'] = True
-                result['decision_options'] = upcoming_stations
+            if self.state == VehicleState.APPROACHING:
+                # Find current target station info
+                for i, station in enumerate(stations_ahead):
+                    if station.get('area_id', station.get('id')) == self.target_station_id:
+                        next_station_km = stations_ahead[i + 1]['location_km'] if i + 1 < len(stations_ahead) else None
+                        if self.needs_charging(next_station_km) or \
+                           self.must_stop_at_station(station['location_km'], next_station_km, highway_end_km):
+                            result['needs_decision'] = True
+                            result['decision_options'] = upcoming_stations
+                        break
+                else:
+                    # Target station not in list, check general need
+                    if self.needs_charging():
+                        result['needs_decision'] = True
+                        result['decision_options'] = upcoming_stations
         
         elif self.state == VehicleState.QUEUED:
             # Update waiting experience
@@ -659,18 +810,26 @@ class Vehicle:
                 comfort = env['station_comfort']
                 self.update_patience(wait_min, comfort)
 
-                # Check abandonment
-                should_abandon = self.driver.decide_to_abort(
-                    self.current_patience,
-                    env['queue_position'],
-                    env['estimated_wait'],
-                    env['alternative_available']
-                )
-                
-                if should_abandon:
-                    self.abandon_charging(timestamp, "patience depleted")
-                    result['abandoned'] = True
-                    result['state_changed'] = True
+                # CRITICAL: Can we reach the next station if we abandon?
+                # A rational driver will NEVER abandon if they can't reach the next station
+                can_reach_next = env.get('can_reach_next_station', True)
+
+                if not can_reach_next:
+                    # Cannot abandon - would strand. Stay in queue no matter what.
+                    pass
+                else:
+                    # Check abandonment only if alternative is reachable
+                    should_abandon = self.driver.decide_to_abort(
+                        self.current_patience,
+                        env['queue_position'],
+                        env['estimated_wait'],
+                        env['alternative_available']
+                    )
+
+                    if should_abandon:
+                        self.abandon_charging(timestamp, "patience depleted")
+                        result['abandoned'] = True
+                        result['state_changed'] = True
         
         elif self.state == VehicleState.CHARGING:
             # Charging handled by station, but check completion

@@ -22,6 +22,7 @@ import matplotlib.dates as mdates
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 import seaborn as sns
 
+
 # Set style
 plt.style.use('seaborn-v0_8-whitegrid')
 sns.set_palette("husl")
@@ -89,6 +90,516 @@ class VisualizationTool:
     # ========================================================================
     # CORE TIME SERIES PLOTS
     # ========================================================================
+    
+    def plot_live_stranding_map(self, highway_length_km: float, 
+                            station_positions: List[float],
+                            recent_strandings: List[Tuple[float, datetime]],
+                            time_window_minutes: float = 30,
+                            **kwargs) -> plt.Figure: # pyright: ignore[reportPrivateImportUsage]
+        """
+        Real-time style map showing recent strandings with time decay.
+        Useful for identifying emerging problem areas during simulation.
+        """
+        config = self._merge_config(kwargs)
+        fig, ax = plt.subplots(figsize=(16, 6), dpi=config.dpi)
+        fig.patch.set_facecolor(self.colors['background'])
+        ax.set_facecolor(self.colors['background'])
+        
+        current_time = kwargs.get('current_time', datetime.now())
+        
+        # Draw highway
+        ax.plot([0, highway_length_km], [0, 0], color=self.colors['neutral'], 
+            linewidth=8, alpha=0.6, solid_capstyle='round')
+        
+        # Draw stations with capacity indicators
+        for i, pos in enumerate(station_positions):
+            # Station marker
+            ax.scatter([pos], [0], s=400, c=self.colors['success'], 
+                    marker='s', zorder=5, edgecolors='white', linewidth=2)
+            ax.annotate(f'S{i+1}\n{pos:.0f}km', xy=(pos, 0), xytext=(0, 25),
+                    textcoords='offset points', ha='center', fontsize=9,
+                    color=self.colors['text'], fontweight='bold')
+        
+        # Plot strandings with time-based fading
+        for pos, time in recent_strandings:
+            age_minutes = (current_time - time).total_seconds() / 60
+            if age_minutes > time_window_minutes:
+                continue
+                
+            # Fade older strandings
+            alpha = 1.0 - (age_minutes / time_window_minutes)
+            size = 200 + (time_window_minutes - age_minutes) * 10
+            
+            # Vertical position based on recency (newer = higher)
+            y_offset = 0.1 + (1 - alpha) * 0.3
+            
+            ax.scatter([pos], [y_offset], s=size, c=self.colors['danger'], 
+                    marker='x', alpha=alpha, linewidth=3, zorder=10)
+            
+            # Time label
+            ax.annotate(f'{age_minutes:.0f}m ago', xy=(pos, y_offset), 
+                    xytext=(0, 10), textcoords='offset points',
+                    ha='center', fontsize=7, alpha=alpha,
+                    color=self.colors['danger'])
+        
+        # Add danger zones (areas with multiple recent strandings)
+        if len(recent_strandings) >= 2:
+            positions = [p for p, t in recent_strandings]
+            # Highlight clusters
+            from scipy.cluster.hierarchy import fclusterdata
+            if len(positions) >= 3:
+                clusters = fclusterdata(np.array(positions).reshape(-1, 1), 
+                                    t=15, criterion='distance')
+                unique_clusters = set(clusters)
+                for cluster_id in unique_clusters:
+                    cluster_positions = [p for p, c in zip(positions, clusters) if c == cluster_id]
+                    if len(cluster_positions) >= 2:
+                        center = np.mean(cluster_positions)
+                        ax.axvspan(center-5, center+5, alpha=0.1,  # pyright: ignore[reportArgumentType]
+                                color=self.colors['danger'], zorder=0)
+                        ax.annotate('DANGER ZONE', xy=(center, 0.5),  # pyright: ignore[reportArgumentType]
+                                ha='center', fontsize=10, color=self.colors['danger'],
+                                fontweight='bold', rotation=90, alpha=0.5)
+        
+        ax.set_xlim(-10, highway_length_km + 10)
+        ax.set_ylim(-0.5, 1)
+        ax.set_xlabel('Highway Position (km)', fontsize=config.label_fontsize, 
+                    color=self.colors['text'])
+        ax.set_title(f'Live Stranding Map (Last {time_window_minutes:.0f} minutes)', 
+                    fontsize=config.title_fontsize, fontweight='bold',
+                    color=self.colors['text'])
+        ax.set_yticks([])
+        ax.tick_params(colors=self.colors['text'])
+        
+        # Legend
+        from matplotlib.lines import Line2D
+        legend_elements = [
+            Line2D([0], [0], marker='s', color='w', markerfacecolor=self.colors['success'], 
+                markersize=12, label='Charging Station'),
+            Line2D([0], [0], marker='x', color='w', markerfacecolor=self.colors['danger'], 
+                markersize=10, label='Stranding (recent)'),
+            Line2D([0], [0], marker='s', color=self.colors['danger'], 
+                markersize=12, alpha=0.3, label='Danger Zone')
+        ]
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=config.tick_fontsize)
+        
+        plt.tight_layout()
+        return fig
+
+    def plot_stranding_analysis(self, 
+                            stranding_data: Dict[str, Any],
+                            highway_length_km: float,
+                            station_positions: List[float],
+                            station_names: Optional[List[str]] = None,
+                            **kwargs) -> plt.Figure: # pyright: ignore[reportPrivateImportUsage]
+        """
+        Comprehensive stranding analysis visualization.
+        
+        Args:
+            stranding_data: Output from VehicleTracker.get_detailed_stranding_data()
+            highway_length_km: Total highway length
+            station_positions: List of station positions in km
+            station_names: Optional list of station names
+        """
+        config = self._merge_config(kwargs)
+        
+        # Create figure with 4 subplots in a grid
+        fig = plt.figure(figsize=(16, 12), dpi=config.dpi)
+        fig.patch.set_facecolor(self.colors['background'])
+        gs = gridspec.GridSpec(3, 2, figure=fig, height_ratios=[2, 1, 1], 
+                            hspace=0.3, wspace=0.3)
+        
+        # Main highway map (top, spans 2 columns)
+        ax_map = fig.add_subplot(gs[0, :])
+        self._plot_stranding_map(ax_map, stranding_data, highway_length_km,
+                                station_positions, station_names, config)
+        
+        # Distance from nearest station histogram
+        ax_dist = fig.add_subplot(gs[1, 0])
+        self._plot_distance_analysis(ax_dist, stranding_data, station_positions, config)
+        
+        # Temporal distribution
+        ax_time = fig.add_subplot(gs[1, 1])
+        self._plot_temporal_distribution(ax_time, stranding_data, config)
+        
+        # Driver type breakdown
+        ax_driver = fig.add_subplot(gs[2, 0])
+        self._plot_driver_breakdown(ax_driver, stranding_data, config)
+        
+        # Battery/SOC analysis
+        ax_battery = fig.add_subplot(gs[2, 1])
+        self._plot_battery_analysis(ax_battery, stranding_data, config)
+        
+        # Overall title with summary stats
+        total = stranding_data.get('total_strandings', 0)
+        fig.suptitle(f'Vehicle Stranding Analysis - Total: {total} vehicles', 
+                    fontsize=config.title_fontsize + 2, fontweight='bold',
+                    color=self.colors['text'], y=0.98)
+        
+        plt.tight_layout()
+        
+        if config.save_path:
+            plt.savefig(f"{config.save_path}_stranding_analysis.png", 
+                    dpi=config.dpi, bbox_inches='tight',
+                    facecolor=self.colors['background'])
+        
+        if config.show_plot:
+            plt.show()
+        
+        return fig
+
+    def _plot_stranding_map(self, ax: plt.Axes, data: Dict, highway_length: float, # pyright: ignore[reportPrivateImportUsage]
+                        stations: List[float], station_names: Optional[List[str]],
+                        config: ChartConfig):
+        """Plot the main highway map with stranding locations."""
+        ax.set_facecolor(self.colors['background'])
+        
+        # Draw highway as thick line
+        ax.plot([0, highway_length], [0, 0], color=self.colors['neutral'], 
+            linewidth=10, alpha=0.6, solid_capstyle='round', zorder=1)
+        
+        # Draw station markers
+        names = station_names or [f"S{i+1}" for i in range(len(stations))]
+        for i, (pos, name) in enumerate(zip(stations, names)):
+            ax.scatter([pos], [0], s=500, c=self.colors['success'], 
+                    marker='s', zorder=5, edgecolors='white', linewidth=2)
+            ax.annotate(f'{name}\n{pos:.0f}km', xy=(pos, 0), xytext=(0, 30),
+                    textcoords='offset points', ha='center', fontsize=9,
+                    color=self.colors['text'], fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor=self.colors['success'],
+                                alpha=0.3, edgecolor='none'))
+            
+            # Draw coverage zone (approximate 80km range)
+            ax.axvspan(pos-40, pos+40, alpha=0.05, color=self.colors['success'], zorder=0)
+        
+        # Plot strandings
+        positions = data.get('positions_km', [])
+        if positions:
+            # Add slight vertical jitter for visibility
+            jitter = np.random.uniform(-0.15, 0.15, len(positions))
+            colors = plt.cm.Reds(np.linspace(0.4, 1, len(positions)))
+            
+            for i, (pos, color) in enumerate(zip(positions, colors)):
+                ax.scatter([pos], [jitter[i]], s=150, c=[color], 
+                        marker='X', edgecolors='darkred', linewidth=1.5, zorder=10)
+            
+            # Add density estimation if enough points
+            if len(positions) >= 5:
+                from scipy.stats import gaussian_kde
+                try:
+                    kde = gaussian_kde(positions)
+                    x_range = np.linspace(0, highway_length, 500)
+                    density = kde(x_range)
+                    # Normalize and scale for visibility
+                    density = density / density.max() * 0.4
+                    ax.fill_between(x_range, -density, density, 
+                                alpha=0.3, color=self.colors['danger'], 
+                                label='Stranding Density')
+                except Exception:
+                    pass  # KDE can fail with some data patterns
+        
+        # Highlight gaps between stations
+        if len(stations) >= 2:
+            sorted_stations = sorted(stations)
+            for i in range(len(sorted_stations)-1):
+                gap = sorted_stations[i+1] - sorted_stations[i]
+                mid = (sorted_stations[i] + sorted_stations[i+1]) / 2
+                if gap > 100:  # Highlight large gaps
+                    ax.axvspan(sorted_stations[i], sorted_stations[i+1], 
+                            alpha=0.1, color=self.colors['warning'], zorder=0)
+                    ax.annotate(f'Gap: {gap:.0f}km', xy=(mid, -0.4), 
+                            ha='center', fontsize=8, color=self.colors['warning'],
+                            fontweight='bold')
+        
+        ax.set_xlim(-5, highway_length + 5)
+        ax.set_ylim(-0.5, 0.5)
+        ax.set_xlabel('Highway Position (km)', fontsize=config.label_fontsize, 
+                    color=self.colors['text'])
+        ax.set_title('Stranding Locations Along Highway', 
+                    fontsize=config.title_fontsize, fontweight='bold',
+                    color=self.colors['text'])
+        ax.set_yticks([])
+        
+        # Legend
+        from matplotlib.lines import Line2D
+        legend_elements = [
+            Line2D([0], [0], marker='s', color='w', markerfacecolor=self.colors['success'],
+                markersize=12, label='Charging Station'),
+            Line2D([0], [0], marker='X', color='w', markerfacecolor=self.colors['danger'],
+                markersize=10, label='Stranding Location')
+        ]
+        ax.legend(handles=legend_elements, loc='upper left', fontsize=config.tick_fontsize)
+        ax.tick_params(colors=self.colors['text'])
+
+    def _plot_distance_analysis(self, ax: plt.Axes, data: Dict,  # pyright: ignore[reportPrivateImportUsage]
+                            stations: List[float], config: ChartConfig):
+        """Analyze distance from strandings to nearest station."""
+        ax.set_facecolor(self.colors['background'])
+        
+        positions = data.get('positions_km', [])
+        if not positions or not stations:
+            ax.text(0.5, 0.5, 'No data', ha='center', va='center',
+                transform=ax.transAxes, fontsize=12)
+            return
+        
+        # Calculate distances to nearest station
+        distances = []
+        for pos in positions:
+            min_dist = min(abs(pos - s) for s in stations)
+            distances.append(min_dist)
+        
+        # Histogram
+        n, bins, patches = ax.hist(distances, bins=15, color=self.colors['danger'],
+                                alpha=0.7, edgecolor=self.colors['text'])
+        
+        # Color bars by severity
+        for i, (patch, left_edge) in enumerate(zip(patches, bins[:-1])):
+            if left_edge < 10:
+                patch.set_color(self.colors['success'])  # Close to station
+            elif left_edge < 30:
+                patch.set_color(self.colors['warning'])  # Moderate
+            else:
+                patch.set_color(self.colors['danger'])   # Far from station
+        
+        # Statistics lines
+        mean_dist = np.mean(distances)
+        median_dist = np.median(distances)
+        ax.axvline(mean_dist, color=self.colors['primary'], linestyle='-', 
+                linewidth=2, label=f'Mean: {mean_dist:.1f} km')
+        ax.axvline(median_dist, color=self.colors['secondary'], linestyle='--',
+                linewidth=2, label=f'Median: {median_dist:.1f} km')
+        
+        ax.set_xlabel('Distance to Nearest Station (km)', fontsize=config.label_fontsize,
+                    color=self.colors['text'])
+        ax.set_ylabel('Number of Strandings', fontsize=config.label_fontsize,
+                    color=self.colors['text'])
+        ax.set_title('Distance from Stranding to Nearest Station',
+                    fontsize=config.title_fontsize, color=self.colors['text'])
+        ax.legend(fontsize=config.tick_fontsize)
+        ax.tick_params(colors=self.colors['text'])
+
+    def _plot_temporal_distribution(self, ax: plt.Axes, data: Dict, config: ChartConfig):
+        """Plot when strandings occur throughout the simulation."""
+        ax.set_facecolor(self.colors['background'])
+        
+        times = data.get('times', [])
+        if not times or times[0] is None:
+            ax.text(0.5, 0.5, 'No temporal data', ha='center', va='center',
+                transform=ax.transAxes, fontsize=12)
+            return
+        
+        # Parse times
+        hours = []
+        for t in times:
+            if t:
+                try:
+                    dt = datetime.fromisoformat(t) if isinstance(t, str) else t
+                    hours.append(dt.hour + dt.minute/60)
+                except Exception:
+                    continue
+        
+        if hours:
+            ax.hist(hours, bins=24, color=self.colors['info'], alpha=0.7,
+                edgecolor=self.colors['text'])
+            ax.set_xlabel('Hour of Day', fontsize=config.label_fontsize,
+                        color=self.colors['text'])
+            ax.set_ylabel('Number of Strandings', fontsize=config.label_fontsize,
+                        color=self.colors['text'])
+            ax.set_title('Temporal Distribution of Strandings',
+                        fontsize=config.title_fontsize, color=self.colors['text'])
+            ax.set_xlim(0, 24)
+            ax.set_xticks(range(0, 25, 4))
+            ax.tick_params(colors=self.colors['text'])
+        else:
+            ax.text(0.5, 0.5, 'No valid time data', ha='center', va='center',
+                transform=ax.transAxes, fontsize=12)
+
+    def _plot_driver_breakdown(self, ax: plt.Axes, data: Dict, config: ChartConfig):
+        """Break down strandings by driver type."""
+        ax.set_facecolor(self.colors['background'])
+        
+        driver_types = data.get('driver_types', [])
+        if not driver_types:
+            ax.text(0.5, 0.5, 'No driver data', ha='center', va='center',
+                transform=ax.transAxes, fontsize=12)
+            return
+        
+        # Count by type
+        type_counts = {}
+        for dt in driver_types:
+            type_counts[dt] = type_counts.get(dt, 0) + 1
+        
+        # Sort by count
+        sorted_types = sorted(type_counts.items(), key=lambda x: x[1], reverse=True)
+        types, counts = zip(*sorted_types)
+        
+        # Color by risk level
+        color_map = {
+            'conservative': self.colors['success'],
+            'balanced': self.colors['info'],
+            'aggressive': self.colors['warning'],
+            'range_anxious': self.colors['danger']
+        }
+        colors = [color_map.get(t, self.colors['neutral']) for t in types]
+        
+        bars = ax.bar(range(len(types)), counts, color=colors, alpha=0.8,
+                    edgecolor=self.colors['text'])
+        ax.set_xticks(range(len(types)))
+        ax.set_xticklabels(types, rotation=45, ha='right')
+        ax.set_ylabel('Number of Strandings', fontsize=config.label_fontsize,
+                    color=self.colors['text'])
+        ax.set_title('Strandings by Driver Type',
+                    fontsize=config.title_fontsize, color=self.colors['text'])
+        ax.tick_params(colors=self.colors['text'])
+        
+        # Add value labels on bars
+        for bar, count in zip(bars, counts):
+            height = bar.get_height()
+            ax.annotate(f'{count}',
+                    xy=(bar.get_x() + bar.get_width() / 2, height),
+                    xytext=(0, 3), textcoords="offset points",
+                    ha='center', va='bottom', fontsize=9,
+                    color=self.colors['text'])
+
+    def _plot_battery_analysis(self, ax: plt.Axes, data: Dict, config: ChartConfig):
+        """Analyze battery characteristics of stranded vehicles."""
+        ax.set_facecolor(self.colors['background'])
+        
+        initial_socs = data.get('initial_socs', [])
+        capacities = data.get('battery_capacities', [])
+        
+        if not initial_socs:
+            ax.text(0.5, 0.5, 'No battery data', ha='center', va='center',
+                transform=ax.transAxes, fontsize=12)
+            return
+        
+        # Scatter plot: capacity vs initial SOC
+        scatter = ax.scatter(capacities, initial_socs, s=100, c=self.colors['danger'],
+                            alpha=0.6, edgecolors=self.colors['text'])
+        
+        # Add trend line if enough points
+        if len(capacities) >= 3:
+            z = np.polyfit(capacities, initial_socs, 1)
+            p = np.poly1d(z)
+            x_line = np.linspace(min(capacities), max(capacities), 100)
+            ax.plot(x_line, p(x_line), "--", color=self.colors['primary'], 
+                alpha=0.8, label='Trend')
+        
+        ax.set_xlabel('Battery Capacity (kWh)', fontsize=config.label_fontsize,
+                    color=self.colors['text'])
+        ax.set_ylabel('Initial SOC', fontsize=config.label_fontsize,
+                    color=self.colors['text'])
+        ax.set_title('Battery Characteristics of Stranded Vehicles',
+                    fontsize=config.title_fontsize, color=self.colors['text'])
+        ax.tick_params(colors=self.colors['text'])
+        ax.set_ylim(0, 1)
+
+    def plot_stranding_heatmap(self, highway_length_km: float = 300.0, **kwargs) -> plt.Figure: # pyright: ignore[reportPrivateImportUsage]
+        """
+        Heatmap visualization of where vehicles get stranded along the highway.
+        Shows hotspots where infrastructure may be insufficient.
+        """
+        if self.df is None or 'strandings' not in self.df.columns:
+            return self._empty_figure("No stranding data available")
+        
+        config = self._merge_config(kwargs)
+        fig, axes = plt.subplots(2, 1, figsize=(14, 10), dpi=config.dpi, 
+                                gridspec_kw={'height_ratios': [3, 1]})
+        fig.patch.set_facecolor(self.colors['background'])
+        
+        # Get stranding events with positions (need to extract from event log or vehicle tracker)
+        # This would come from VehicleTracker's failed_trips or event log
+        
+        ax1 = axes[0]
+        ax1.set_facecolor(self.colors['background'])
+        
+        # Create highway schematic
+        ax1.axhline(y=0, color=self.colors['neutral'], linewidth=4, alpha=0.8, label='Highway')
+        
+        # Plot charging stations
+        station_positions = kwargs.get('station_positions', [])  # km positions
+        for pos in station_positions:
+            ax1.axvline(x=pos, color=self.colors['success'], linewidth=2, 
+                    alpha=0.6, linestyle='--')
+            ax1.scatter([pos], [0], s=200, c=self.colors['success'], 
+                    marker='s', zorder=5, label='Charging Station' if pos == station_positions[0] else "")
+        
+        # Plot stranding locations (scatter with jitter for visibility)
+        stranding_positions = kwargs.get('stranding_positions', [])
+        stranding_times = kwargs.get('stranding_times', [])
+        
+        if stranding_positions:
+            # Add vertical jitter for visibility
+            jitter = np.random.uniform(-0.1, 0.1, len(stranding_positions))
+            colors = plt.cm.Reds(np.linspace(0.4, 1, len(stranding_positions))) # pyright: ignore[reportAttributeAccessIssue]
+            
+            scatter = ax1.scatter(stranding_positions, jitter, 
+                                c=range(len(stranding_positions)), 
+                                cmap='Reds', s=100, alpha=0.8, 
+                                edgecolors='darkred', linewidth=1, zorder=10)
+            
+            # Add colorbar for temporal progression
+            cbar = plt.colorbar(scatter, ax=ax1, pad=0.02)
+            cbar.set_label('Time Progression', color=self.colors['text'])
+        
+        # KDE plot for density
+        if len(stranding_positions) > 3:
+            from scipy.stats import gaussian_kde
+            kde = gaussian_kde(stranding_positions)
+            x_range = np.linspace(0, highway_length_km, 500)
+            density = kde(x_range)
+            ax1.fill_between(x_range, -density*0.5, density*0.5, 
+                            alpha=0.3, color=self.colors['danger'], label='Stranding Density')
+        
+        ax1.set_xlim(0, highway_length_km)
+        ax1.set_ylim(-0.5, 0.5)
+        ax1.set_xlabel('Highway Position (km)', fontsize=config.label_fontsize, 
+                    color=self.colors['text'])
+        ax1.set_title('Vehicle Stranding Locations Along Highway', 
+                    fontsize=config.title_fontsize, fontweight='bold', 
+                    color=self.colors['text'])
+        ax1.set_yticks([])
+        ax1.legend(loc='upper right', fontsize=config.tick_fontsize)
+        ax1.tick_params(colors=self.colors['text'])
+        
+        # Bottom: Histogram of stranding distances from nearest station
+        ax2 = axes[1]
+        ax2.set_facecolor(self.colors['background'])
+        
+        if stranding_positions and station_positions:
+            # Calculate distance to nearest station for each stranding
+            distances_to_station = []
+            for pos in stranding_positions:
+                min_dist = min(abs(pos - s) for s in station_positions)
+                distances_to_station.append(min_dist)
+            
+            ax2.hist(distances_to_station, bins=20, color=self.colors['danger'], 
+                    alpha=0.7, edgecolor=self.colors['text'])
+            ax2.axvline(x=np.mean(distances_to_station), color=self.colors['primary'], 
+                    linestyle='-', linewidth=2, label=f'Mean: {np.mean(distances_to_station):.1f} km')
+            ax2.axvline(x=np.median(distances_to_station), color=self.colors['secondary'], 
+                    linestyle='--', linewidth=2, label=f'Median: {np.median(distances_to_station):.1f} km')
+            
+            ax2.set_xlabel('Distance to Nearest Charging Station (km)', 
+                        fontsize=config.label_fontsize, color=self.colors['text'])
+            ax2.set_ylabel('Number of Strandings', fontsize=config.label_fontsize, 
+                        color=self.colors['text'])
+            ax2.set_title('Stranding Distance from Nearest Station', 
+                        fontsize=config.title_fontsize, color=self.colors['text'])
+            ax2.legend(fontsize=config.tick_fontsize)
+            ax2.tick_params(colors=self.colors['text'])
+        
+        plt.tight_layout()
+        
+        if config.save_path:
+            plt.savefig(f"{config.save_path}_stranding_heatmap.png", 
+                    dpi=config.dpi, bbox_inches='tight',
+                    facecolor=self.colors['background'])
+        
+        if config.show_plot:
+            plt.show()
+        
+        return fig    
     
     def plot_required_kpis(self, **kwargs) -> plt.Figure: # pyright: ignore[reportPrivateImportUsage]
         """

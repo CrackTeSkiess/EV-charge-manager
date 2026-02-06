@@ -96,12 +96,7 @@ def main():
         temporal_distribution=traffic_pattern,
         simulation_duration_hours=args.duration,
         random_seed=args.seed,
-        early_stop=EarlyStopCondition(
-            max_consecutive_strandings=10,
-            abandonment_rate_threshold=0.3,
-            max_queue_occupancy=10.5,
-            convergence_patience=2000
-        )
+        early_stop=EarlyStopCondition.disabled() 
     )
 
     # Create and run simulation
@@ -167,7 +162,17 @@ def main():
     print("=" * 70)
     print(f"Results saved to: {output_dir}")
     print("=" * 70)
-
+    
+    if not args.no_visualize:
+        report_data = sim.generate_stranding_report(output_dir=str(output_dir))
+        print(f"\nStranding Report Summary:")
+        print(f"  Total strandings: {report_data['total_strandings']}")
+        print(f"  Stranding rate: {report_data['stranding_rate']:.2%}")
+        
+        print(f"\nTop Recommendations:")
+        for rec in report_data['recommendations'][:3]:
+            print(f"  [{rec['priority']}] {rec['message']}")
+    
     return 0
 
 

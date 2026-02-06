@@ -55,7 +55,7 @@ class Charger:
     """
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     power_kw: float = 50.0
-    charger_type: ChargerType = ChargerType.FAST
+    charger_type: ChargerType = ChargerType.ULTRA
     status: ChargerStatus = ChargerStatus.AVAILABLE
     current_session: Optional[ChargingSession] = None
     efficiency_curve: Callable[[float], float] = field(default_factory=lambda: lambda soc: 0.9)
@@ -100,11 +100,31 @@ class Charger:
         
         self.current_session.delivered_energy_kwh += energy_delivered
         
+        # NOTE: We do NOT auto-complete based on requested_energy_kwh anymore
+        # The Highway controls when to complete based on safety requirements
+        # Return None to indicate session is still active
+        # Highway will call complete_session() when vehicle can safely exit
+        
+        return None    
+    
+    '''
+    def update_session(self, time_elapsed_minutes: float) -> Optional[ChargingSession]:
+        """Update session progress. Returns completed session if finished."""
+        if self.current_session is None:
+            return None
+        
+        # Calculate energy delivered in this time step
+        efficiency = self.efficiency_curve(0.5)  # Simplified - would track actual SOC
+        energy_delivered = (self.power_kw * efficiency) * (time_elapsed_minutes / 60)
+        
+        self.current_session.delivered_energy_kwh += energy_delivered
+        
         # Check completion
         if self.current_session.delivered_energy_kwh >= self.current_session.requested_energy_kwh:
             return self.complete_session()
         
         return None
+    '''
     
     def complete_session(self) -> ChargingSession:
         """Complete current session and free charger."""
@@ -221,7 +241,7 @@ class ChargingArea:
                     ))
         else:
             # Default: equal distribution
-            default_type = ChargerType.FAST
+            default_type = ChargerType.ULTRA
             power = self._get_power_for_type(default_type)
             for _ in range(num_chargers):
                 self.chargers.append(Charger(
@@ -460,6 +480,72 @@ class ChargingArea:
             'abandonments_cleaned': 0
         }
         
+        # Update all active charging sessions AND vehicle batteries
+        for charger in self.chargers:
+            if charger.status == ChargerStatus.OCCUPIED:
+                # Calculate energy delivered this step
+                efficiency = charger.efficiency_curve(0.5)
+                energy_delivered = (charger.power_kw * efficiency) * (time_step_minutes / 60)
+                
+                # Update session tracking
+                if charger.current_session:
+                    charger.current_session.delivered_energy_kwh += energy_delivered
+                
+                # CRITICAL: Update the vehicle's actual battery
+                # Need to get vehicle reference - store it in session or look it up
+                vehicle_id = charger.current_session.vehicle_id if charger.current_session else None
+                if vehicle_id:
+                    # Find vehicle in highway - need reference to highway
+                    # For now, just track in session, Highway will apply it
+                    pass
+                
+                # Check completion based on requested energy
+                if charger.current_session and charger.current_session.delivered_energy_kwh >= charger.current_session.requested_energy_kwh:
+                    completed = charger.complete_session()
+                    if completed:
+                        events['completed_sessions'].append({
+                            'vehicle_id': completed.vehicle_id,
+                            'energy_delivered': completed.delivered_energy_kwh,
+                            'duration_min': (current_time - completed.start_time).total_seconds() / 60
+                        })
+                        self.stats['completed_sessions'] += 1
+        
+        # Clean abandoned entries from queue and assign new vehicles
+        self._clean_queue()
+        
+        # Assign available chargers to queue
+        while self.get_available_chargers() and self.queue:
+            next_entry = self._get_next_valid_entry()
+            if not next_entry:
+                break
+            
+            # Get actual vehicle data - need highway reference
+            result = self.start_charging(
+                next_entry.vehicle_id,
+                energy_needed_kwh=50.0,  # FIXME: Should come from vehicle
+                vehicle_soc=0.2  # FIXME: Should come from vehicle
+            )
+            if result:
+                events['new_assignments'].append({
+                    'vehicle_id': next_entry.vehicle_id,
+                    'charger_id': result['charger_id']
+                })
+        
+        return events    
+    
+    '''
+    def step(self, current_time: datetime, time_step_minutes: float = 1.0) -> Dict:
+        """
+        Advance simulation by one time step.
+        
+        Returns summary of events this step.
+        """
+        self.current_time = current_time
+        events = {
+            'completed_sessions': [],
+            'new_assignments': [],
+            'abandonments_cleaned': 0
+        }
         # Update all active charging sessions
         for charger in self.chargers:
             if charger.status == ChargerStatus.OCCUPIED:
@@ -494,6 +580,7 @@ class ChargingArea:
                 })
         
         return events
+    '''
     
     def _clean_queue(self) -> int:
         """Remove abandoned entries marked with patience_score < 0."""
