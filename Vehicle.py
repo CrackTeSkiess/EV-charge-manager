@@ -257,7 +257,8 @@ class Vehicle:
         initial_soc: Optional[float] = None,
         driver_behavior: Optional[DriverBehavior] = None,
         initial_position_km: float = 0.0,
-        initial_speed_kmh: float = 0.0
+        initial_speed_kmh: float = 0.0,
+        track_history: bool = False
     ):
         self.id = vehicle_id or str(uuid.uuid4())[:8]
         
@@ -302,7 +303,8 @@ class Vehicle:
         self.charging_stops = 0
         self.total_charging_time_min = 0.0
         
-        # DEBUG: Detailed history for stranded vehicle analysis
+        # DEBUG: Detailed history for stranded vehicle analysis (optional)
+        self.track_history = track_history
         self.detailed_history: List[Dict[str, Any]] = []
         self.state_history: List[Dict[str, Any]] = []
         self.position_history: List[Dict[str, Any]] = []
@@ -312,9 +314,11 @@ class Vehicle:
     # DEBUGGING / HISTORY
     # ========================================================================
     
-    def _log_event(self, event_type: str, details: str, 
+    def _log_event(self, event_type: str, details: str,
                    extra_data: Optional[Dict] = None) -> None:
         """Log a detailed event for debugging stranded vehicles."""
+        if not self.track_history:
+            return
         entry = {
             'timestamp': datetime.now().isoformat(),
             'event_type': event_type,
@@ -546,19 +550,22 @@ class Vehicle:
             self._log_event("STATE_CHANGE", 
                           f"{old_state.name} -> {new_state.name}: {reason}",
                           {'old_state': old_state.name, 'new_state': new_state.name})
-            self.state_history.append({
-                'time': timestamp,
-                'from': old_state,
-                'to': new_state,
-                'reason': reason,
-                'position': self.position_km,
-                'soc': self.battery.current_soc
-            })
+            if self.track_history:
+                self.state_history.append({
+                    'time': timestamp,
+                    'from': old_state,
+                    'to': new_state,
+                    'reason': reason,
+                    'position': self.position_km,
+                    'soc': self.battery.current_soc
+                })
             self.state = new_state
             self.state_entry_time = timestamp
     
     def _log_state(self, event: str, details: str = ""):
         """Internal state logging."""
+        if not self.track_history:
+            return
         self.state_history.append({
             'event': event,
             'details': details,
@@ -961,14 +968,15 @@ class Vehicle:
                 result['charging_complete'] = True
                 result['state_changed'] = True
         
-        # Record history (every step)
-        self.position_history.append({
-            'time': timestamp,
-            'position': self.position_km,
-            'speed': self.speed_kmh,
-            'soc': self.battery.current_soc,
-            'state': self.state
-        })
+        # Record history (every step, if enabled)
+        if self.track_history:
+            self.position_history.append({
+                'time': timestamp,
+                'position': self.position_km,
+                'speed': self.speed_kmh,
+                'soc': self.battery.current_soc,
+                'state': self.state
+            })
         
         return result
     

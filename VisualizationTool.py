@@ -1047,9 +1047,9 @@ class VisualizationTool:
         ax1 = fig.add_subplot(gs[0, :2])
         self._plot_vehicle_counts(ax1, time_index, config) # pyright: ignore[reportArgumentType]
         
-        # 2. Current statistics cards (top right)
+        # 2. Charger occupancy % (top right)
         ax2 = fig.add_subplot(gs[0, 2])
-        self._plot_stats_cards(ax2, config)
+        self._plot_charger_occupancy(ax2, time_index, config) # pyright: ignore[reportArgumentType]
         
         # 3. Queue and charging (middle left)
         ax3 = fig.add_subplot(gs[1, 0])
@@ -1121,47 +1121,35 @@ class VisualizationTool:
         ax.tick_params(colors=self.colors['text'])
         ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))
     
-    def _plot_stats_cards(self, ax: plt.Axes, config: ChartConfig): # pyright: ignore[reportPrivateImportUsage]
-        """Display current statistics as text cards."""
+    def _plot_charger_occupancy(self, ax: plt.Axes, time_index: pd.DatetimeIndex, # pyright: ignore[reportPrivateImportUsage]
+                               config: ChartConfig):
+        """Plot charger occupancy percentage over time."""
         ax.set_facecolor(self.colors['background'])
-        ax.axis('off')
-        
-        if self.df.empty: # pyright: ignore[reportOptionalMemberAccess]
-            return
-        
-        latest = self.df.iloc[-1] # pyright: ignore[reportOptionalMemberAccess]
-        
-        stats = [
-            ('Total Vehicles', f"{int(latest['vehicles_on_road'])}", self.colors['primary']),
-            ('Charging', f"{int(latest['total_charging'])}", self.colors['success']),
-            ('Queued', f"{int(latest['total_queued'])}", self.colors['warning']),
-            ('Avg Wait', f"{latest['avg_wait_time_minutes']:.1f} min", self.colors['info']),
-            ('Avg SOC', f"{latest['avg_soc_percent']:.1f}%", self.colors['secondary']),
-            ('Service Level', f"{latest['service_level']*100:.1f}%", self.colors['success']),
-        ]
-        
-        y_pos = 0.9
-        for label, value, color in stats:
-            # Card background
-            rect = FancyBboxPatch((0.05, y_pos - 0.12), 0.9, 0.14,
-                                 boxstyle="round,pad=0.01",
-                                 facecolor=color, alpha=0.2,
-                                 edgecolor=color, linewidth=2,
-                                 transform=ax.transAxes)
-            ax.add_patch(rect)
-            
-            # Text
-            ax.text(0.1, y_pos, label, fontsize=config.label_fontsize,
-                   transform=ax.transAxes, color=self.colors['text'], 
-                   fontweight='bold', va='center')
-            ax.text(0.9, y_pos, value, fontsize=config.title_fontsize,
-                   transform=ax.transAxes, color=color, 
-                   fontweight='bold', va='center', ha='right')
-            
-            y_pos -= 0.16
-        
-        ax.set_title('Current Status', fontsize=config.title_fontsize, 
-                    color=self.colors['text'], fontweight='bold', y=0.98)
+
+        utilization = self.df['charging_utilization'] * 100 # pyright: ignore[reportOptionalSubscript]
+
+        # Color based on severity
+        colors = [self.colors['danger'] if x > 95 else
+                 self.colors['warning'] if x > 80 else self.colors['success']
+                 for x in utilization]
+
+        ax.scatter(time_index, utilization, c=colors, alpha=0.6, s=20)
+        ax.plot(time_index, utilization, color=self.colors['neutral'],
+               alpha=0.5, linewidth=1)
+
+        # Threshold lines
+        ax.axhline(y=100, color=self.colors['danger'], linestyle='--',
+                  alpha=0.7, label='Full')
+        ax.axhline(y=80, color=self.colors['warning'], linestyle=':',
+                  alpha=0.7, label='High')
+
+        ax.set_title('Charger Occupancy %', fontsize=config.title_fontsize,
+                    color=self.colors['text'], fontweight='bold')
+        ax.set_ylabel('Occupancy %', fontsize=config.label_fontsize, color=self.colors['text'])
+        ax.set_ylim(0, max(110, utilization.max() * 1.1))
+        ax.legend(fontsize=config.tick_fontsize, loc='lower right')
+        ax.tick_params(colors=self.colors['text'])
+        ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))
     
     def _plot_queue_metrics(self, ax: plt.Axes, time_index: pd.DatetimeIndex,  # pyright: ignore[reportPrivateImportUsage]
                            config: ChartConfig):

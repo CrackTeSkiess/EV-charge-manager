@@ -53,13 +53,15 @@ class Highway:
         length_km: float = 300.0,
         charging_areas: Optional[List[ChargingArea]] = None,
         segments: Optional[List[HighwaySegment]] = None,
-        vehicle_tracker: Optional[VehicleTracker] = None
+        vehicle_tracker: Optional[VehicleTracker] = None,
+        allow_queue_overflow: bool = True
     ):
         self.id = highway_id or str(uuid.uuid4())[:8]
         self.length_km = length_km
 
         # Vehicle tracker (set externally or None)
         self.tracker: Optional[VehicleTracker] = vehicle_tracker
+        self.allow_queue_overflow = allow_queue_overflow
 
         # Charging infrastructure
         self.charging_areas: Dict[str, ChargingArea] = {}
@@ -258,7 +260,7 @@ class Highway:
                                    f"SOC={vehicle.battery.current_soc:.1%}",
                                    vehicle_id)
             # Print debug report immediately
-            print("\n" + vehicle.get_debug_report())
+            #print("\n" + vehicle.get_debug_report())
         else:
             self.vehicles_exiting.append(vehicle)
             self.stats['total_exited'] += 1
@@ -461,8 +463,8 @@ class Highway:
                 }
 
             else:
-                # Denied - but check if must_stop
-                if must_stop:
+                # Denied - but check if must_stop and overflow allowed
+                if must_stop and self.allow_queue_overflow:
                     # EMERGENCY: Vehicle cannot be turned away - force into overflow queue
                     self.vehicles_in_queue[vehicle_id] = (area_id, timestamp)
                     vehicle.set_state(VehicleState.QUEUED, timestamp,
@@ -476,7 +478,7 @@ class Highway:
                             vehicle_id, timestamp, area_id, "emergency overflow queue"
                         )
 
-                    self._log_highway_event("QUEUE_EMERGENCY", 
+                    self._log_highway_event("QUEUE_EMERGENCY",
                                            "Forced into overflow queue",
                                            vehicle_id)
 
@@ -498,8 +500,8 @@ class Highway:
 
                     return {'status': 'denied', 'reason': result.get('reason')}
         else:
-            # Entry rejected - but check if must_stop
-            if must_stop:
+            # Entry rejected - but check if must_stop and overflow allowed
+            if must_stop and self.allow_queue_overflow:
                 # EMERGENCY: Vehicle cannot be turned away - force into overflow queue
                 self.vehicles_in_queue[vehicle_id] = (area_id, timestamp)
                 vehicle.set_state(VehicleState.QUEUED, timestamp,
@@ -513,7 +515,7 @@ class Highway:
                         vehicle_id, timestamp, area_id, "emergency overflow queue"
                     )
 
-                self._log_highway_event("QUEUE_EMERGENCY", 
+                self._log_highway_event("QUEUE_EMERGENCY",
                                        "Forced into overflow queue (rejected)",
                                        vehicle_id)
 
@@ -557,6 +559,50 @@ class Highway:
 
             area = self.charging_areas[area_id]
             current_station_km = area.location_km
+
+            # === CHECK PROMOTION FIRST ===
+            # ChargingArea.step() may have assigned a charger to this vehicle,
+            # but cannot update Vehicle state — detect via charger session lookup.
+            # This MUST run before safety/abandonment checks which use `continue`.
+            assigned_charger_id = None
+            assigned_power_kw = 0.0
+            if vehicle.state != VehicleState.CHARGING:
+                for charger in area.chargers:
+                    if (charger.current_session and
+                            charger.current_session.vehicle_id == vehicle_id):
+                        assigned_charger_id = charger.id
+                        assigned_power_kw = charger.power_kw
+                        break
+
+            promoted = (vehicle.state == VehicleState.CHARGING or
+                        assigned_charger_id is not None)
+            if promoted:
+                if vehicle.state != VehicleState.CHARGING and assigned_charger_id:
+                    vehicle.start_charging(assigned_charger_id, assigned_power_kw,
+                                           timestamp)
+
+                del self.vehicles_in_queue[vehicle_id]
+                self.vehicles_at_station[vehicle_id] = area_id
+                self.stats['total_charging_stops'] += 1
+
+                wait_minutes = (timestamp - entry_time).total_seconds() / 60
+
+                self._log_highway_event("QUEUE_PROMOTED",
+                                       "Promoted to charging",
+                                       vehicle_id)
+
+                if self.tracker:
+                    self.tracker.transition_to_charging(
+                        vehicle_id, timestamp, area_id, "promoted from queue"
+                    )
+
+                events.append({
+                    'type': 'charging_started',
+                    'vehicle_id': vehicle_id,
+                    'area_id': area_id,
+                    'wait_minutes': wait_minutes
+                })
+                continue
 
             # Find the next station after this one
             next_station_km = None
@@ -661,29 +707,7 @@ class Highway:
                 })
                 continue
 
-            # Check if promoted to charging (by area step)
-            if vehicle.state == VehicleState.CHARGING:
-                # Promoted!
-                del self.vehicles_in_queue[vehicle_id]
-                self.vehicles_at_station[vehicle_id] = area_id
-                self.stats['total_charging_stops'] += 1
-
-                self._log_highway_event("QUEUE_PROMOTED", 
-                                       "Promoted to charging",
-                                       vehicle_id)
-
-                # Notify tracker
-                if self.tracker:
-                    self.tracker.transition_to_charging(
-                        vehicle_id, timestamp, area_id, "promoted from queue"
-                    )
-
-                events.append({
-                    'type': 'charging_started',
-                    'vehicle_id': vehicle_id,
-                    'area_id': area_id,
-                    'wait_minutes': wait_minutes
-                })
+            # (Promotion already checked at top of loop)
 
         return events
     
@@ -724,8 +748,36 @@ class Highway:
                     charger = c
                     break
 
-            if not charger or vehicle.state != VehicleState.CHARGING:
-                # Already released or state mismatch
+            if vehicle.state != VehicleState.CHARGING:
+                # State mismatch - vehicle already released
+                continue
+
+            if not charger:
+                # ChargingArea.step() already completed this session and freed
+                # the charger, but Highway wasn't notified. Release the vehicle.
+                del self.vehicles_at_station[vehicle_id]
+                vehicle.finish_charging(timestamp, 0)
+                vehicle.set_state(VehicleState.EXITING, timestamp,
+                                "charging complete (area-released)")
+
+                self._log_highway_event("CHARGING_COMPLETE",
+                                       "Released (session completed by area)",
+                                       vehicle_id)
+
+                if self.tracker:
+                    self.tracker.transition_to_exiting(
+                        vehicle_id, timestamp,
+                        energy_received_kwh=0,
+                        reason="charging complete (area-released)"
+                    )
+
+                events.append({
+                    'type': 'charging_complete',
+                    'vehicle_id': vehicle_id,
+                    'area_id': area_id,
+                    'duration_min': 0,
+                    'energy_kwh': 0
+                })
                 continue
 
             # === CRITICAL: Update vehicle battery with energy delivered ===

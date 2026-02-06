@@ -38,7 +38,7 @@ class TrafficStrandingAnalyzer:
         num_stations: int = 5,
         chargers_per_station: int = 10,
         waiting_spots: int = 30,
-        simulation_duration_hours: float = 5.0,
+        simulation_duration_hours: float = 10.0,
         random_seed: int = 42
     ):
         self.highway_length_km = highway_length_km
@@ -78,7 +78,8 @@ class TrafficStrandingAnalyzer:
             temporal_distribution=TemporalDistribution.RANDOM_POISSON,
             simulation_duration_hours=self.simulation_duration_hours,
             random_seed=self.random_seed,
-            early_stop=EarlyStopCondition.disabled()  # Run full duration
+            early_stop=EarlyStopCondition.disabled(),  # Run full duration
+            allow_queue_overflow=False
         )
         
         sim = Simulation(params)
@@ -344,7 +345,9 @@ def demo_analysis():
         TrafficLevelConfig(120, "120 veh/h", "red"),
         TrafficLevelConfig(150, "150 veh/h", "darkred"),
         TrafficLevelConfig(200, "200 veh/h", "grey"),
-        TrafficLevelConfig(300, "300 veh/h", "pink"),
+        TrafficLevelConfig(300, "300 veh/h", "black"),
+        #TrafficLevelConfig(500, "500 veh/h", "darkgrey"),
+        #TrafficLevelConfig(1000, "1000 veh/h", "darkblack"),
     ]
     
     # Create analyzer

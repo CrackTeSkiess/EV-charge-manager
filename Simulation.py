@@ -292,6 +292,12 @@ class SimulationParameters:
     
     # Charger tracker
     enable_station_tracking: bool = False
+    
+    # vehicle tracker
+    enable_vehicle_tracking: bool = False
+
+    # Queue overflow (allow vehicles to join full queues in emergencies)
+    allow_queue_overflow: bool = True
 
     def to_dict(self) -> Dict:
         """Convert to dictionary (for serialization)."""
@@ -439,7 +445,9 @@ class Simulation:
             arrival_rate_per_minute=0,  # Controlled by generator
             simulation_start_time=self.params.start_time,
             time_step_minutes=self.params.time_step_minutes,
-            random_seed=self.params.random_seed
+            random_seed=self.params.random_seed,
+            track_vehicle_history=self.params.enable_vehicle_tracking,
+            allow_queue_overflow=self.params.allow_queue_overflow
         )
 
         # Create environment with tracker
@@ -514,6 +522,7 @@ class Simulation:
                   f"{self.params.temporal_distribution.name}")
             print(f"Early stop: {self._early_stop_summary()}")
             print(f"Vehicle Tracker: ENABLED (centralized tracking)")
+            print(f"Vehicle History: {'ENABLED' if self.params.enable_vehicle_tracking else 'DISABLED'}")
             print(f"Station Tracker: {'ENABLED' if self.collector else 'DISABLED'}")
             print(f"{'='*70}\n")
 

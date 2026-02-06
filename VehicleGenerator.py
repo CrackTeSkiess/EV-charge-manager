@@ -414,7 +414,8 @@ class VehicleGenerator:
             initial_speed_kmh=random.uniform(
                 max(80, driver.speed_preference_kmh - 20),
                 driver.speed_preference_kmh
-            )
+            ),
+            track_history=self.env.config.track_vehicle_history
         )
         
         return vehicle

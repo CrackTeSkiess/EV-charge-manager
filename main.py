@@ -81,6 +81,14 @@ def parse_args():
         "--enable-station-tracker", action="store_true",
         help="Enable station tracking output"
     )
+    parser.add_argument(
+        "--enable-vehicle-tracker", action="store_true",
+        help="Enable per-vehicle history tracking (detailed/state/position)"
+    )
+    parser.add_argument(
+        "--no-queue-overflow", action="store_true",
+        help="Disable emergency queue overflow (vehicles rejected even if they can't reach next station)"
+    )
 
     return parser.parse_args()
 
@@ -103,8 +111,9 @@ def main():
         simulation_duration_hours=args.duration,
         random_seed=args.seed,
         enable_station_tracking=args.enable_station_tracker,
-        early_stop=EarlyStopCondition.disabled() 
-        
+        enable_vehicle_tracking=args.enable_vehicle_tracker,
+        allow_queue_overflow=not args.no_queue_overflow,
+        early_stop=EarlyStopCondition.disabled()
     )
 
     # Create and run simulation

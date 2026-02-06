@@ -58,6 +58,12 @@ class SimulationConfig:
     # Random seed
     random_seed: Optional[int] = None
 
+    # Vehicle history tracking (per-vehicle detailed/state/position history)
+    track_vehicle_history: bool = False
+
+    # Allow queue overflow (emergency vehicles forced into full queues)
+    allow_queue_overflow: bool = True
+
 
 class Environment:
     """
@@ -190,7 +196,8 @@ class Environment:
             highway_id="HWY-MAIN",
             length_km=self.config.highway_length_km,
             charging_areas=charging_areas,
-            vehicle_tracker=self.tracker
+            vehicle_tracker=self.tracker,
+            allow_queue_overflow=self.config.allow_queue_overflow
         )
 
         return highway
@@ -273,7 +280,8 @@ class Environment:
             initial_soc=initial_soc,
             driver_behavior=driver,
             initial_position_km=0.0,
-            initial_speed_kmh=random.uniform(100, 130)
+            initial_speed_kmh=random.uniform(100, 130),
+            track_history=self.config.track_vehicle_history
         )
         
         while not vehicle.can_physically_reach(vehicle.position_km):
