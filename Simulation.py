@@ -572,6 +572,7 @@ class Simulation:
             self.on_stop(self.stop_reason, self.stop_message)  # pyright: ignore[reportArgumentType]
 
         return self.result
+    
 
     def _execute_step(self) -> Tuple[bool, Optional[StopReason], str]:
         """
@@ -713,6 +714,7 @@ class Simulation:
     def _finalize(self) -> None:
         """Clean up after simulation completes."""
         # Ensure all remaining vehicles are accounted for
+        
         if self.environment:
             # Force despawn of remaining vehicles
             for vid in list(self.environment.active_vehicle_ids):
@@ -777,6 +779,9 @@ class Simulation:
         # Step 2: Get station positions from highway
         print("Extracting charging station positions...")
         highway = self.environment.highway
+        
+        highway.plot_stranded_vehicle_trajectories(max_vehicles=10)
+        highway.plot_stranding_summary_chart()
         station_positions = []
         station_names = []
         

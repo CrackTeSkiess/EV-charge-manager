@@ -1,5 +1,5 @@
 """
-Highway Module
+Highway Module - WITH DEBUGGING
 Road infrastructure managing vehicle movement and charging area coordination.
 """
 
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Set, Tuple, Callable, TYPE_CHECKING
+from typing import List, Dict, Optional, Set, Tuple, Callable, TYPE_CHECKING, Any
 from collections import defaultdict
 from datetime import datetime, timedelta
 import math
@@ -91,6 +91,30 @@ class Highway:
         }
 
         self.current_time: Optional[datetime] = None
+        
+        # DEBUG: Track all events for analysis
+        self.event_log: List[Dict[str, Any]] = []
+
+    def _log_highway_event(self, event_type: str, details: str, 
+                          vehicle_id: Optional[str] = None,
+                          extra_data: Optional[Dict] = None) -> None:
+        """Log highway-level events for debugging."""
+        entry = {
+            'timestamp': datetime.now().isoformat(),
+            'event_type': event_type,
+            'details': details,
+            'vehicle_id': vehicle_id,
+            'sim_time': self.current_time.isoformat() if self.current_time else None
+        }
+        if extra_data:
+            entry.update(extra_data)
+        self.event_log.append(entry)
+        
+        # Print for real-time debugging
+        prefix = f"[HIGHWAY {self.id}]"
+        if vehicle_id:
+            prefix += f" [Vehicle {vehicle_id}]"
+        #print(f"{prefix} {event_type}: {details}")
 
     def set_tracker(self, tracker: VehicleTracker) -> None:
         """Set the vehicle tracker after construction."""
@@ -199,6 +223,10 @@ class Highway:
         self.stats['total_entered'] += 1
 
         vehicle._log_state("entered_highway", f"at km {vehicle.position_km:.1f}")
+        self._log_highway_event("VEHICLE_ENTER", 
+                               f"Spawned at km {vehicle.position_km:.1f}, "
+                               f"SOC={vehicle.battery.current_soc:.1%}",
+                               vehicle.id)
 
         return vehicle
 
@@ -225,9 +253,18 @@ class Highway:
         if reason == "stranded":
             self.vehicles_stranded.append(vehicle)
             self.stats['total_stranded'] += 1
+            self._log_highway_event("VEHICLE_STRANDED", 
+                                   f"Stranded at km {vehicle.position_km:.1f}, "
+                                   f"SOC={vehicle.battery.current_soc:.1%}",
+                                   vehicle_id)
+            # Print debug report immediately
+            print("\n" + vehicle.get_debug_report())
         else:
             self.vehicles_exiting.append(vehicle)
             self.stats['total_exited'] += 1
+            self._log_highway_event("VEHICLE_EXIT", 
+                                   f"Exited at km {vehicle.position_km:.1f}",
+                                   vehicle_id)
 
         return vehicle
 
@@ -268,56 +305,25 @@ class Highway:
                 must_stop = vehicle.must_stop_at_station(km, next_station_km, self.length_km)
 
                 if vehicle.target_station_id == area_id:
+                    self._log_highway_event("STATION_APPROACH", 
+                                           f"Target station {area_id} at km {km}",
+                                           vehicle.id,
+                                           {'must_stop': must_stop})
                     return area_id
                 elif must_stop:
                     # MUST stop - rational driver won't skip and strand
+                    self._log_highway_event("STATION_MUST_STOP", 
+                                           f"Forced stop at {area_id}, km {km}",
+                                           vehicle.id)
                     return area_id
                 elif vehicle.needs_charging(next_station_km):
                     # Wants to charge based on comfort/range anxiety
+                    self._log_highway_event("STATION_WANTS_CHARGE", 
+                                           f"Optional stop at {area_id}, km {km}",
+                                           vehicle.id)
                     return area_id
 
         return None
-
-    '''
-    def _check_station_approach(self, vehicle: Vehicle) -> Optional[str]:
-        """
-        Check if vehicle is at a charging area location and wants to enter.
-        Returns area_id if handoff should occur, None otherwise.
-
-        A rational driver MUST stop if they cannot reach the next station.
-        """
-        # Only interested vehicles in right states
-        if vehicle.state not in [VehicleState.APPROACHING, VehicleState.DECIDING]:
-            return None
-
-        # Get sorted list of station positions
-        sorted_stations = sorted(self.station_positions.keys())
-
-        # Find if at station location (within 0.5 km threshold)
-        for km, area_id in self.station_positions.items():
-            if abs(vehicle.position_km - km) < 0.5:
-                # Vehicle is at station location
-                # Find the next station after this one
-                next_station_km = None
-                for station_km in sorted_stations:
-                    if station_km > km + 0.5:  # Must be meaningfully ahead
-                        next_station_km = station_km
-                        break
-
-                # Check if vehicle MUST stop here (can't reach next station or highway end)
-                must_stop = vehicle.must_stop_at_station(km, next_station_km, self.length_km)
-
-                if vehicle.target_station_id == area_id:
-                    return area_id
-                elif must_stop:
-                    # MUST stop - rational driver won't skip and strand
-                    return area_id
-                elif vehicle.needs_charging(next_station_km):
-                    # Wants to charge based on comfort/range anxiety
-                    return area_id
-
-        return None
-    '''
 
     def _handoff_to_station(self, vehicle_id: str, area_id: str,
                            timestamp: datetime) -> Dict:
@@ -347,6 +353,11 @@ class Highway:
             priority_score=vehicle.current_patience,
             power_preference=None  # Could be based on vehicle capability
         )
+
+        self._log_highway_event("HANDOFF_REQUEST", 
+                               f"Area {area_id}, granted={result['granted']}, "
+                               f"action={result.get('action')}, must_stop={must_stop}",
+                               vehicle_id)
 
         if result['granted']:
             if result['action'] == 'immediate':
@@ -381,7 +392,8 @@ class Highway:
                 
                 # Add 30km buffer for safety
                 safety_distance = distance_to_next + 30.0
-                consumption_rate = vehicle.calculate_consumption_rate(vehicle.speed_kmh)
+                highway_speed = vehicle.driver.speed_preference_kmh
+                consumption_rate = vehicle.calculate_consumption_rate(highway_speed)
                 safety_energy_needed = consumption_rate * safety_distance
                 
                 # Current energy needed to reach target SOC
@@ -415,6 +427,10 @@ class Highway:
                         session_result['power_kw'],
                         timestamp
                     )
+                    self._log_highway_event("CHARGING_START", 
+                                           f"Charger {session_result['charger_id']}, "
+                                           f"power={session_result['power_kw']}kW",
+                                           vehicle_id)
                     return {'status': 'charging', 'charger': session_result['charger_id']}
                 else:
                     return {'status': 'charging', 'charger': None}
@@ -432,6 +448,11 @@ class Highway:
                     self.tracker.transition_to_queued(
                         vehicle_id, timestamp, area_id, f"queue position {result['queue_position']}"
                     )
+
+                self._log_highway_event("QUEUE_JOIN", 
+                                       f"Position {result['queue_position']}, "
+                                       f"wait={result['estimated_wait']:.1f}min",
+                                       vehicle_id)
 
                 return {
                     'status': 'queued',
@@ -454,6 +475,10 @@ class Highway:
                         self.tracker.transition_to_queued(
                             vehicle_id, timestamp, area_id, "emergency overflow queue"
                         )
+
+                    self._log_highway_event("QUEUE_EMERGENCY", 
+                                           "Forced into overflow queue",
+                                           vehicle_id)
 
                     return {
                         'status': 'queued',
@@ -488,6 +513,10 @@ class Highway:
                         vehicle_id, timestamp, area_id, "emergency overflow queue"
                     )
 
+                self._log_highway_event("QUEUE_EMERGENCY", 
+                                       "Forced into overflow queue (rejected)",
+                                       vehicle_id)
+
                 return {
                     'status': 'queued',
                     'position': len(area.queue) + 1,
@@ -511,7 +540,8 @@ class Highway:
         Update vehicles waiting in charging area queues.
         Check for abandonments and promotions to charging.
 
-        IMPORTANT: A rational driver will NEVER abandon if they cannot reach the next station.
+        CRITICAL FIX: A rational driver will NEVER abandon if they cannot reach 
+        the next station. This is now enforced with multiple safety checks.
         """
         events = []
 
@@ -535,26 +565,63 @@ class Highway:
                     next_station_km = station_km
                     break
 
-            # CRITICAL CHECK: Can the vehicle reach the next station (or highway end) if it abandons?
-            # A rational driver will NEVER abandon if abandoning means stranding
+            # === CRITICAL SAFETY CHECKS ===
+            # Check 1: If battery is critical (< 20%), CANNOT abandon regardless of range calculation
+            if vehicle.battery.current_soc < 0.20:
+                vehicle._log_event("QUEUE_SAFETY_BLOCK", 
+                                 f"Critical battery {vehicle.battery.current_soc:.1%}, "
+                                 f"forced to stay in queue")
+                # Still update patience for logging, but cap it to prevent abandonment
+                wait_minutes = (timestamp - entry_time).total_seconds() / 60
+                vehicle.update_patience(wait_minutes, 0.5)
+                vehicle.current_patience = max(vehicle.current_patience, 0.3)  # Force minimum patience
+                continue  # Skip all abandonment logic
+
+            # Check 2: Can the vehicle reach the next station (or highway end) if it abandons?
             can_reach_next = True
+            distance_to_target = 0
+            
             if next_station_km is not None:
+                # Distance from current position to next station
+                distance_to_target = abs(next_station_km - vehicle.position_km)
                 can_reach_next = vehicle.can_physically_reach(next_station_km, at_highway_speed=True)
             else:
                 # No next station - check if can reach highway end
+                distance_to_target = abs(self.length_km - vehicle.position_km)
                 can_reach_next = vehicle.can_physically_reach(self.length_km, at_highway_speed=True)
 
-            # Update patience
+            # Check 3: Additional safety margin - if range is close to distance, don't risk it
+            if can_reach_next:
+                # Get the estimated range
+                consumption = vehicle._get_conservative_consumption(vehicle.driver.speed_preference_kmh)
+                estimated_range = vehicle.battery.estimate_range_km(consumption)
+                
+                # If range is less than 1.5x the distance, it's too risky
+                safety_margin = 1.5
+                if estimated_range < distance_to_target * safety_margin:
+                    vehicle._log_event("QUEUE_SAFETY_MARGIN", 
+                                     f"Range {estimated_range:.1f}km too close to "
+                                     f"distance {distance_to_target:.1f}km "
+                                     f"(need {safety_margin}x, have {estimated_range/max(1,distance_to_target):.2f}x)")
+                    can_reach_next = False
+
+            # Update patience (for tracking purposes)
             wait_minutes = (timestamp - entry_time).total_seconds() / 60
             comfort = 0.5  # Would come from area amenities
             vehicle.update_patience(wait_minutes, comfort)
 
-            # Only consider abandonment if physically possible to reach next station
+            # FINAL CHECK: Only consider abandonment if ALL safety checks pass
             if not can_reach_next:
                 # Cannot abandon - would strand. Vehicle must stay in queue.
-                continue
+                vehicle._log_event("QUEUE_BLOCKED", 
+                                 f"Cannot safely reach next station at "
+                                 f"{next_station_km if next_station_km else 'END'} "
+                                 f"(distance {distance_to_target:.1f}km)")
+                # Force patience to stay above abandonment threshold
+                vehicle.current_patience = max(vehicle.current_patience, 0.3)
+                continue  # Skip abandonment - stay in queue
 
-            # Check for abandonment decision (only if alternative is reachable)
+            # Only if we passed all safety checks, check for abandonment decision
             alternative_stations = self.get_stations_in_range(current_station_km)
             alternative_available = len(alternative_stations) > 1
 
@@ -573,6 +640,13 @@ class Highway:
                 vehicle.abandon_charging(timestamp, "patience depleted")
                 self.stats['total_abandonments'] += 1
 
+                self._log_highway_event("QUEUE_ABANDON", 
+                                       f"Abandoned after {wait_minutes:.1f}min, "
+                                       f"patience={vehicle.current_patience:.2f}, "
+                                       f"SOC={vehicle.battery.current_soc:.1%}, "
+                                       f"can_reach_next={can_reach_next}",
+                                       vehicle_id)
+
                 # Notify tracker
                 if self.tracker:
                     self.tracker.record_abandonment(
@@ -588,13 +662,15 @@ class Highway:
                 continue
 
             # Check if promoted to charging (by area step)
-            # This is handled in area.step() which calls start_charging
-            # We just need to update vehicle state if that happened
             if vehicle.state == VehicleState.CHARGING:
                 # Promoted!
                 del self.vehicles_in_queue[vehicle_id]
                 self.vehicles_at_station[vehicle_id] = area_id
                 self.stats['total_charging_stops'] += 1
+
+                self._log_highway_event("QUEUE_PROMOTED", 
+                                       "Promoted to charging",
+                                       vehicle_id)
 
                 # Notify tracker
                 if self.tracker:
@@ -610,76 +686,13 @@ class Highway:
                 })
 
         return events
-
-    '''
-    def _update_charging_vehicles(self, timestamp: datetime) -> List[Dict]:
-        """
-        Update vehicles actively charging.
-        Check for completion and release back to highway.
-        """
-        events = []
-
-        for vehicle_id, area_id in list(self.vehicles_at_station.items()):
-            vehicle = self.vehicles.get(vehicle_id)
-            if not vehicle:
-                # Vehicle no longer exists - clean up
-                del self.vehicles_at_station[vehicle_id]
-                continue
-
-            area = self.charging_areas[area_id]
-
-            # Find which charger has this vehicle
-            charger = None
-            for c in area.chargers:
-                if c.current_session and c.current_session.vehicle_id == vehicle_id:
-                    charger = c
-                    break
-
-            if not charger or vehicle.state != VehicleState.CHARGING:
-                # Already released or state mismatch
-                continue
-
-            # Check if vehicle wants to stop (reached target SOC)
-            session = charger.current_session
-            if session:
-                # Calculate if charged enough - use driver's target_soc directly
-                if vehicle.battery.current_soc >= vehicle.driver.target_soc:
-                    # Complete charging
-                    completed = charger.complete_session()
-                    duration_min = (timestamp - session.start_time).total_seconds() / 60
-
-                    vehicle.finish_charging(timestamp, duration_min)
-                    del self.vehicles_at_station[vehicle_id]
-
-                    # Notify tracker
-                    if self.tracker:
-                        self.tracker.transition_to_exiting(
-                            vehicle_id, timestamp,
-                            energy_received_kwh=completed.delivered_energy_kwh,
-                            reason="charging complete"
-                        )
-
-                    # Back to highway
-                    vehicle.set_state(VehicleState.EXITING, timestamp,
-                                    "charging complete")
-
-                    events.append({
-                        'type': 'charging_complete',
-                        'vehicle_id': vehicle_id,
-                        'area_id': area_id,
-                        'duration_min': duration_min,
-                        'energy_kwh': completed.delivered_energy_kwh
-                    })
-
-        return events
-    '''
-
+    
     def _update_charging_vehicles(self, timestamp: datetime) -> List[Dict]:
         """
         Update vehicles actively charging.
         Check for completion and release back to highway.
         
-        CRITICAL: Vehicle will NOT exit until it has enough charge to reach
+        CRITICAL FIX: Vehicle will NOT exit until it has enough charge to reach
         the next station or the highway end.
         """
         events = []
@@ -755,6 +768,13 @@ class Highway:
                     vehicle.finish_charging(timestamp, duration_min)
                     del self.vehicles_at_station[vehicle_id]
 
+                    self._log_highway_event("CHARGING_COMPLETE", 
+                                           f"Duration={duration_min:.1f}min, "
+                                           f"energy={completed.delivered_energy_kwh:.1f}kWh, "
+                                           f"SOC={vehicle.battery.current_soc:.1%}, "
+                                           f"can_reach_next={can_exit_safely}",
+                                           vehicle_id)
+
                     # Notify tracker
                     if self.tracker:
                         self.tracker.transition_to_exiting(
@@ -779,12 +799,16 @@ class Highway:
                     # Continue charging beyond target until safe to exit
                     # This overrides the driver's normal target SOC preference
                     # for safety reasons
+                    vehicle._log_event("CHARGING_CONTINUE", 
+                                     f"Target SOC reached but cannot reach next station. "
+                                     f"Continuing to charge...")
                     pass  # Continue charging - do not release vehicle
                 # else: Haven't reached target SOC yet, keep charging
                 
-                if session.delivered_energy_kwh >= session.requested_energy_kwh:
-                    # Only complete if safety check passes
-                    pass            
+                # REMOVED: Old logic that completed based only on requested_energy_kwh
+                # if session.delivered_energy_kwh >= session.requested_energy_kwh:
+                #     # Only complete if safety check passes
+                #     pass            
 
         return events
 
@@ -853,7 +877,9 @@ class Highway:
                     
                     # If must stop but didn't, force them back!
                     if vehicle.must_stop_at_station(station_km, next_station_km, self.length_km):
-                        #print(f"WARNING: Vehicle {vehicle_id} passed station {area_id} at km {station_km} but must stop! Forcing stop.")
+                        self._log_highway_event("MISSED_STATION", 
+                                               f"Forced back to station at km {station_km}",
+                                               vehicle_id)
                         vehicle.position_km = station_km  # Move back to station
                         vehicle.set_state(VehicleState.APPROACHING, timestamp, f"forced stop at {area_id}")
                         handoff_result = self._handoff_to_station(vehicle_id, area_id, timestamp)
@@ -960,6 +986,447 @@ class Highway:
                 step_events['strandings'].append({'vehicle_id': vid})
 
         return step_events
+
+    def run_simulation_with_debug(self, duration_hours: float = 8.0, 
+                                 spawn_rate_per_hour: float = 60.0) -> None:
+        """
+        Run simulation and automatically generate debug plots at the end.
+        """
+        from datetime import datetime, timedelta
+        
+        start_time = datetime(2024, 1, 15, 8, 0)  # 8 AM
+        end_time = start_time + timedelta(hours=duration_hours)
+        current_time = start_time
+        
+        time_step = timedelta(minutes=1)
+        
+        print(f"Starting simulation from {start_time} to {end_time}")
+        print(f"Highway length: {self.length_km} km")
+        print(f"Stations at: {sorted(self.station_positions.keys())} km")
+        print("-" * 70)
+        
+        step_count = 0
+        while current_time < end_time:
+            # Spawn new vehicles
+            import random
+            if random.random() < (spawn_rate_per_hour / 60.0):
+                self.spawn_traffic(1, current_time)
+            
+            # Step simulation
+            self.step(current_time, time_step_minutes=1.0)
+            
+            # Progress report every hour
+            step_count += 1
+            if step_count % 60 == 0:
+                hours_elapsed = step_count // 60
+                state = self.get_highway_state()
+                print(f"[{hours_elapsed}h] Active: {state['active_vehicles']}, "
+                      f"Stranded: {self.stats['total_stranded']}, "
+                      f"Exited: {self.stats['total_exited']}")
+            
+            current_time += time_step
+        
+        print("-" * 70)
+        print("Simulation complete!")
+        print(f"Total entered: {self.stats['total_entered']}")
+        print(f"Total exited: {self.stats['total_exited']}")
+        print(f"Total stranded: {self.stats['total_stranded']}")
+        
+        # Generate debug visualizations
+        if self.vehicles_stranded:
+            print("\nGenerating stranded vehicle analysis...")
+            self.plot_stranded_vehicle_trajectories(max_vehicles=10)
+            self.plot_stranding_summary_chart()
+            print(self.generate_stranding_report())
+        else:
+            print("\nNo vehicles stranded - no debug plots generated")
+
+    # ========================================================================
+    # DEBUGGING: Generate comprehensive report and plots for stranded vehicles
+    # ========================================================================
+    
+    def generate_stranding_report(self) -> str:
+        """Generate a comprehensive report of all stranded vehicles."""
+        lines = [
+            f"\n{'='*80}",
+            f"STRANDING ANALYSIS REPORT",
+            f"{'='*80}",
+            f"Total vehicles entered: {self.stats['total_entered']}",
+            f"Total vehicles exited: {self.stats['total_exited']}",
+            f"Total vehicles stranded: {self.stats['total_stranded']}",
+            f"Stranding rate: {100*self.stats['total_stranded']/max(1,self.stats['total_entered']):.1f}%",
+            f"\nDetailed reports for each stranded vehicle:",
+            f"{'-'*80}"
+        ]
+        
+        for vehicle in self.vehicles_stranded:
+            lines.append(vehicle.get_debug_report())
+        
+        # Summary of common patterns
+        if self.vehicles_stranded:
+            lines.extend(self._analyze_stranding_patterns())
+        
+        lines.append(f"{'='*80}\n")
+        return "\n".join(lines)
+    
+    def _analyze_stranding_patterns(self) -> List[str]:
+        """Analyze common patterns among stranded vehicles."""
+        analysis = [
+            f"\n{'#'*80}",
+            "PATTERN ANALYSIS:",
+            f"{'#'*80}"
+        ]
+        
+        # Group by driver type
+        driver_types = {}
+        for v in self.vehicles_stranded:
+            dtype = v.driver.behavior_type
+            driver_types[dtype] = driver_types.get(dtype, 0) + 1
+        
+        analysis.append("\nStranding by driver type:")
+        for dtype, count in sorted(driver_types.items(), key=lambda x: -x[1]):
+            analysis.append(f"  {dtype}: {count}")
+        
+        # Check for abandonment correlation
+        abandon_count = sum(1 for v in self.vehicles_stranded 
+                          if any(e['event_type'] == 'ABANDON' for e in v.detailed_history))
+        analysis.append(f"\nVehicles that abandoned queue before stranding: {abandon_count}")
+        
+        # Check charging stop correlation
+        avg_charging_stops = sum(v.charging_stops for v in self.vehicles_stranded) / len(self.vehicles_stranded)
+        analysis.append(f"Average charging stops before stranding: {avg_charging_stops:.1f}")
+        
+        # Position analysis
+        positions = [v.position_km for v in self.vehicles_stranded]
+        avg_pos = sum(positions) / len(positions)
+        analysis.append(f"Average stranding position: {avg_pos:.1f} km")
+        
+        # Check if strandings cluster near stations
+        station_kms = sorted(self.station_positions.keys())
+        near_station_count = 0
+        for pos in positions:
+            for sk in station_kms:
+                if abs(pos - sk) < 20:  # Within 20km of a station
+                    near_station_count += 1
+                    break
+        
+        analysis.append(f"Vehicles stranded near stations (<20km): {near_station_count}/{len(positions)}")
+        
+        return analysis
+
+    def plot_stranded_vehicle_trajectories(self, max_vehicles: int = 10, 
+                                          output_dir: str = "./simulation_output") -> None:
+        """
+        Plot detailed trajectories of stranded vehicles to analyze failure modes.
+        
+        Creates a multi-panel plot for each vehicle showing:
+        - Position vs time (with station markers)
+        - SOC vs time (with critical levels marked)
+        - State timeline
+        - Key events annotated
+        
+        Args:
+            max_vehicles: Maximum number of stranded vehicles to plot (default 10)
+            save_path: If provided, save plots to this file path
+        """
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        from matplotlib.lines import Line2D
+        import numpy as np
+        
+        if not self.vehicles_stranded:
+            print("No stranded vehicles to plot")
+            return
+        
+        # Select up to max_vehicles most recent strandings
+        vehicles_to_plot = self.vehicles_stranded[-max_vehicles:]
+        n_vehicles = len(vehicles_to_plot)
+        
+        # Create figure with subplots for each vehicle
+        # Each vehicle gets 3 rows: position, SOC, state timeline
+        fig, axes = plt.subplots(n_vehicles, 3, figsize=(18, 4*n_vehicles))
+        if n_vehicles == 1:
+            axes = axes.reshape(1, -1)
+        
+        # Color map for states
+        state_colors = {
+            'CRUISING': '#2ecc71',      # Green
+            'APPROACHING': '#f39c12',   # Orange
+            'DECIDING': '#9b59b6',      # Purple
+            'QUEUED': '#3498db',        # Blue
+            'CHARGING': '#1abc9c',      # Teal
+            'EXITING': '#e74c3c',       # Red
+            'STRANDED': '#000000',      # Black
+            'DESTINATION': '#95a5a6'    # Gray
+        }
+        
+        # Station positions for reference
+        station_positions = sorted(self.station_positions.keys())
+        
+        for idx, vehicle in enumerate(vehicles_to_plot):
+            ax_pos = axes[idx, 0]  # Position vs time
+            ax_soc = axes[idx, 1]  # SOC vs time
+            ax_state = axes[idx, 2]  # State timeline
+            
+            # Extract time series data from history
+            times = []
+            positions = []
+            socs = []
+            states = []
+            speeds = []
+            
+            for entry in vehicle.detailed_history:
+                try:
+                    # Parse timestamp
+                    if isinstance(entry['timestamp'], str):
+                        t = datetime.fromisoformat(entry['timestamp'])
+                    else:
+                        t = entry['timestamp']
+                    times.append(t)
+                    positions.append(entry.get('position_km', 0))
+                    socs.append(entry.get('soc', 0) * 100)  # Convert to percentage
+                    states.append(entry.get('state', 'UNKNOWN'))
+                    speeds.append(entry.get('speed_kmh', 0))
+                except (KeyError, ValueError):
+                    continue
+            
+            if not times:
+                continue
+            
+            # Convert times to minutes from start
+            start_time = times[0]
+            time_minutes = [(t - start_time).total_seconds() / 60 for t in times]
+            
+            # --- PLOT 1: Position vs Time ---
+            ax_pos.plot(time_minutes, positions, 'b-', linewidth=2, label='Position')
+            ax_pos.set_ylabel('Position (km)', fontsize=10)
+            ax_pos.set_xlabel('Time (min)', fontsize=10)
+            ax_pos.set_title(f'Vehicle {vehicle.id} - Position Track\n'
+                           f'Driver: {vehicle.driver.behavior_type}, '
+                           f'Stops: {vehicle.charging_stops}', fontsize=11)
+            ax_pos.grid(True, alpha=0.3)
+            
+            # Add station markers
+            for station_km in station_positions:
+                ax_pos.axhline(y=station_km, color='gray', linestyle='--', alpha=0.5)
+                ax_pos.text(time_minutes[-1]*0.02, station_km+2, f'Station {station_km:.0f}km', 
+                          fontsize=8, color='gray')
+            
+            # Mark stranding point
+            if vehicle.state == VehicleState.STRANDED and positions:
+                ax_pos.scatter([time_minutes[-1]], [positions[-1]], 
+                             color='red', s=200, marker='X', zorder=5, label='Stranded')
+            
+            # Add event annotations
+            for i, entry in enumerate(vehicle.detailed_history):
+                if entry.get('event_type') in ['ABANDON', 'CHARGE_START', 'CHARGE_COMPLETE', 
+                                               'MISSED_STATION', 'QUEUE_BLOCKED']:
+                    if i < len(time_minutes):
+                        ax_pos.annotate(entry['event_type'], 
+                                      xy=(time_minutes[i], positions[i]),
+                                      xytext=(10, 10), textcoords='offset points',
+                                      fontsize=7, color='red',
+                                      bbox=dict(boxstyle='round,pad=0.3', 
+                                               facecolor='yellow', alpha=0.7),
+                                      arrowprops=dict(arrowstyle='->', color='red'))
+            
+            ax_pos.legend(loc='upper left', fontsize=8)
+            
+            # --- PLOT 2: SOC vs Time ---
+            ax_soc.plot(time_minutes, socs, 'g-', linewidth=2, label='SOC')
+            ax_soc.set_ylabel('SOC (%)', fontsize=10)
+            ax_soc.set_xlabel('Time (min)', fontsize=10)
+            ax_soc.set_title('Battery State of Charge', fontsize=11)
+            ax_soc.set_ylim(0, 100)
+            ax_soc.grid(True, alpha=0.3)
+            
+            # Add critical SOC lines
+            ax_soc.axhline(y=20, color='orange', linestyle='--', alpha=0.7, label='Low (20%)')
+            ax_soc.axhline(y=10, color='red', linestyle='--', alpha=0.7, label='Critical (10%)')
+            ax_soc.axhline(y=5, color='darkred', linestyle='--', alpha=0.7, label='Emergency (5%)')
+            
+            # Fill area below critical levels
+            ax_soc.fill_between(time_minutes, 0, socs, where=[s <= 10 for s in socs], 
+                              color='red', alpha=0.3, label='Critical zone')
+            
+            # Mark charging periods
+            in_charging = False
+            charge_start = None
+            for i, state in enumerate(states):
+                if state == 'CHARGING' and not in_charging:
+                    in_charging = True
+                    charge_start = time_minutes[i]
+                elif state != 'CHARGING' and in_charging:
+                    in_charging = False
+                    if charge_start is not None:
+                        ax_soc.axvspan(charge_start, time_minutes[i], 
+                                     color='green', alpha=0.2, label='Charging')
+            
+            # Mark stranding point
+            if socs:
+                ax_soc.scatter([time_minutes[-1]], [socs[-1]], 
+                             color='red', s=200, marker='X', zorder=5)
+            
+            ax_soc.legend(loc='upper right', fontsize=8)
+            
+            # --- PLOT 3: State Timeline ---
+            # Create a timeline showing state transitions
+            state_changes = []
+            current_state = states[0] if states else 'UNKNOWN'
+            state_start_time = time_minutes[0] if time_minutes else 0
+            
+            for i in range(1, len(states)):
+                if states[i] != current_state:
+                    state_changes.append({
+                        'state': current_state,
+                        'start': state_start_time,
+                        'end': time_minutes[i-1],
+                        'duration': time_minutes[i-1] - state_start_time
+                    })
+                    current_state = states[i]
+                    state_start_time = time_minutes[i]
+            
+            # Add final state
+            if time_minutes:
+                state_changes.append({
+                    'state': current_state,
+                    'start': state_start_time,
+                    'end': time_minutes[-1],
+                    'duration': time_minutes[-1] - state_start_time
+                })
+            
+            # Plot state bars
+            y_pos = 0
+            for change in state_changes:
+                color = state_colors.get(change['state'], '#95a5a6')
+                ax_state.barh(y_pos, change['duration'], left=change['start'], 
+                            color=color, height=0.6, edgecolor='black')
+                # Add state label if duration is long enough
+                if change['duration'] > (time_minutes[-1] - time_minutes[0]) * 0.05:
+                    ax_state.text(change['start'] + change['duration']/2, y_pos,
+                                change['state'], ha='center', va='center',
+                                fontsize=8, fontweight='bold')
+            
+            ax_state.set_yticks([])
+            ax_state.set_xlabel('Time (min)', fontsize=10)
+            ax_state.set_title('State Timeline', fontsize=11)
+            ax_state.set_xlim(time_minutes[0] if time_minutes else 0, 
+                            time_minutes[-1] if time_minutes else 1)
+            
+            # Add legend for states
+            legend_elements = [mpatches.Patch(color=color, label=state) 
+                             for state, color in state_colors.items() 
+                             if state in [s['state'] for s in state_changes]]
+            ax_state.legend(handles=legend_elements, loc='upper left', 
+                          fontsize=7, ncol=2)
+        
+        plt.tight_layout()
+        
+        if output_dir:
+            save_path = f"{output_dir}/stranded_vehicles_trajectories.png"
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Saved stranded vehicle trajectories to {save_path}")
+        else:
+            plt.savefig('./simulation_output/stranded_vehicles_trajectories.png', 
+                       dpi=150, bbox_inches='tight')
+            print("Saved stranded vehicle trajectories to /simulation_output/stranded_vehicles_trajectories.png")
+        
+        plt.show()
+    
+    def plot_stranding_summary_chart(self, output_dir: str = "./simulation_output") -> None:
+        """
+        Create a summary chart showing aggregate statistics about stranded vehicles.
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        if not self.vehicles_stranded:
+            print("No stranded vehicles to analyze")
+            return
+        
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        
+        # 1. Stranding position histogram
+        ax = axes[0, 0]
+        positions = [v.position_km for v in self.vehicles_stranded]
+        ax.hist(positions, bins=20, color='red', alpha=0.7, edgecolor='black')
+        ax.set_xlabel('Stranding Position (km)')
+        ax.set_ylabel('Number of Vehicles')
+        ax.set_title('Where Do Vehicles Strand?')
+        ax.grid(True, alpha=0.3)
+        
+        # Add station markers
+        for station_km in sorted(self.station_positions.keys()):
+            ax.axvline(station_km, color='blue', linestyle='--', alpha=0.5)
+        
+        # 2. SOC at stranding
+        ax = axes[0, 1]
+        final_socs = [v.battery.current_soc * 100 for v in self.vehicles_stranded]
+        ax.hist(final_socs, bins=15, color='orange', alpha=0.7, edgecolor='black')
+        ax.set_xlabel('Final SOC (%)')
+        ax.set_ylabel('Number of Vehicles')
+        ax.set_title('Battery Level When Stranded')
+        ax.axvline(5, color='red', linestyle='--', label='Critical (5%)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # 3. Driver type distribution
+        ax = axes[0, 2]
+        driver_types = {}
+        for v in self.vehicles_stranded:
+            dtype = v.driver.behavior_type
+            driver_types[dtype] = driver_types.get(dtype, 0) + 1
+        colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12']
+        ax.pie(driver_types.values(), labels=driver_types.keys(), autopct='%1.1f%%',
+               colors=colors[:len(driver_types)])
+        ax.set_title('Stranded by Driver Type')
+        
+        # 4. Charging stops before stranding
+        ax = axes[1, 0]
+        charging_stops = [v.charging_stops for v in self.vehicles_stranded]
+        stop_counts = {}
+        for stops in charging_stops:
+            stop_counts[stops] = stop_counts.get(stops, 0) + 1
+        ax.bar(stop_counts.keys(), stop_counts.values(), color='green', alpha=0.7)
+        ax.set_xlabel('Number of Charging Stops')
+        ax.set_ylabel('Number of Vehicles')
+        ax.set_title('Charging Stops Before Stranding')
+        ax.grid(True, alpha=0.3)
+        
+        # 5. Distance traveled
+        ax = axes[1, 1]
+        distances = [v.total_distance_km for v in self.vehicles_stranded]
+        ax.hist(distances, bins=15, color='purple', alpha=0.7, edgecolor='black')
+        ax.set_xlabel('Total Distance Traveled (km)')
+        ax.set_ylabel('Number of Vehicles')
+        ax.set_title('Distance Before Stranding')
+        ax.grid(True, alpha=0.3)
+        
+        # 6. Abandonment correlation
+        ax = axes[1, 2]
+        abandoned = []
+        for v in self.vehicles_stranded:
+            has_abandon = any(e.get('event_type') == 'ABANDON' 
+                            for e in v.detailed_history)
+            abandoned.append('Abandoned Queue' if has_abandon else 'Did Not Abandon')
+        abandon_counts = {}
+        for a in abandoned:
+            abandon_counts[a] = abandon_counts.get(a, 0) + 1
+        ax.pie(abandon_counts.values(), labels=abandon_counts.keys(), autopct='%1.1f%%',
+               colors=['#e74c3c', '#2ecc71'])
+        ax.set_title('Queue Abandonment Before Stranding')
+        
+        plt.suptitle(f'Stranded Vehicle Analysis (n={len(self.vehicles_stranded)})', 
+                    fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        
+        if output_dir:
+            save_path = f"{output_dir}/stranding_summary.png"
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        else:
+            plt.savefig('./simulation_output/stranding_summary.png', dpi=150, bbox_inches='tight')
+        
+        plt.show()
 
     # ========================================================================
     # BATCH OPERATIONS

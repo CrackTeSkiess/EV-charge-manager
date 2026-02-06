@@ -1,5 +1,5 @@
 """
-Vehicle Module
+Vehicle Module - WITH DEBUGGING
 Electric vehicle agent with physical dynamics and driver behavior.
 """
 
@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import uuid
 import math
+import random
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Optional, Dict, Callable, Tuple
+from typing import Optional, Dict, Callable, Tuple, List, Any
 from datetime import datetime, timedelta
 
 
@@ -100,7 +101,6 @@ class Battery:
 class DriverBehavior:
     """
     Driver behavior profile - determines decision making and driving style.
-    This is a separate class as requested, encapsulating all human factors.
     """
     
     # Identification
@@ -155,7 +155,6 @@ class DriverBehavior:
         """
         Calculate attractiveness score for a charging station.
         Returns 0-1 score (higher = more attractive).
-        This will integrate with fuzzy logic system later.
         """
         # Urgency factor (linear for now, fuzzy later)
         urgency = max(0, 1 - (current_soc / self.min_charge_to_continue))
@@ -187,22 +186,21 @@ class DriverBehavior:
         
         return min(1.0, score)
     
-    def update_patience(self, current_patience: float, wait_minutes: float,
-                       comfort_level: float, battery_urgency: float) -> float:
+    def update_patience(self, current_patience: float, wait_minutes: float, comfort_level: float, urgency: float) -> float:
         """
         Update patience based on waiting experience.
         Returns new patience level (0-1).
         """
         # Base decay
-        decay = self.patience_decay_rate * (wait_minutes / 10)  # Per 10 min
+        decay = wait_minutes * self.patience_decay_rate
         
-        # Comfort modifier (better comfort = slower decay)
-        comfort_factor = 1.0 - comfort_level * 0.5
+        # Comfort adjustment (fuzzy: better amenities reduce decay)
+        comfort_adjustment = (1 - comfort_level) * 0.2
         
-        # Urgency modifier (urgent = faster patience loss)
-        urgency_factor = 1.0 + battery_urgency * 2.0
+        # Urgency adjustment (fuzzy: more urgent = less patience loss)
+        urgency_adjustment = (1 - urgency) * 0.3
         
-        new_patience = current_patience - (decay * comfort_factor * urgency_factor)
+        new_patience = current_patience - decay * (1 + comfort_adjustment) * (1 - urgency_adjustment)
         return max(0.0, min(1.0, new_patience))
     
     def decide_to_abort(self, current_patience: float, queue_position: int,
@@ -224,7 +222,6 @@ class DriverBehavior:
         position_penalty = min(0.3, queue_position * 0.05)
         abandonment_prob += position_penalty
         
-        import random
         return random.random() < min(0.95, abandonment_prob)
     
     def __repr__(self) -> str:
@@ -236,12 +233,6 @@ class DriverBehavior:
 class Vehicle:
     """
     Electric vehicle agent with physical dynamics and driver behavior.
-    
-    Physical attributes:
-    - Battery: charge state, capacity, consumption
-    - Speed: current velocity with acceleration limits
-    - Position: location on highway (km from origin)
-    - Discharge rate: speed-dependent energy consumption
     """
     
     # Physics constants
@@ -254,6 +245,10 @@ class Vehicle:
     ROLLING_RESISTANCE = 0.01        # Coefficient
     VEHICLE_MASS_KG = 2000.0         # kg (with driver)
     GRAVITY = 9.81                   # m/s²
+    
+    # Safety margins
+    SAFETY_MARGIN_KM = 20.0          # Minimum km buffer for "must stop" decisions
+    CONSUMPTION_SAFETY_FACTOR = 1.15  # 15% buffer on consumption
     
     def __init__(
         self,
@@ -269,7 +264,6 @@ class Vehicle:
         # Battery initialization with random SOC if not specified
         if initial_soc is None:
             # Distribution: mostly mid-range, some low, some high
-            import random
             rand = random.random()
             if rand < 0.2:
                 initial_soc = random.uniform(0.15, 0.35)  # Low
@@ -308,11 +302,120 @@ class Vehicle:
         self.charging_stops = 0
         self.total_charging_time_min = 0.0
         
-        # History for analysis
-        self.position_history: list = []  # [(time, pos, speed, soc)]
-        self.state_history: list = []     # [(time, state, reason)]
+        # DEBUG: Detailed history for stranded vehicle analysis
+        self.detailed_history: List[Dict[str, Any]] = []
+        self.state_history: List[Dict[str, Any]] = []
+        self.position_history: List[Dict[str, Any]] = []
+        self._log_event("INIT", f"Created at km {initial_position_km:.1f}, SOC={initial_soc:.1%}")
+    
+    # ========================================================================
+    # DEBUGGING / HISTORY
+    # ========================================================================
+    
+    def _log_event(self, event_type: str, details: str, 
+                   extra_data: Optional[Dict] = None) -> None:
+        """Log a detailed event for debugging stranded vehicles."""
+        entry = {
+            'timestamp': datetime.now().isoformat(),
+            'event_type': event_type,
+            'details': details,
+            'position_km': self.position_km,
+            'soc': self.battery.current_soc,
+            'state': self.state.name,
+            'speed_kmh': self.speed_kmh,
+            'range_estimate_km': self.get_range_estimate(),
+            'patience': self.current_patience
+        }
+        if extra_data:
+            entry.update(extra_data)
+        self.detailed_history.append(entry)
         
-        self._log_state("initialized")
+        # Also print for real-time debugging
+        #print(f"[VEHICLE {self.id}] {event_type}: {details} "
+        #      f"(pos={self.position_km:.1f}km, SOC={self.battery.current_soc:.1%}, "
+        #      f"state={self.state.name})")
+    
+    def get_debug_report(self) -> str:
+        """Generate a detailed debug report for this vehicle."""
+        lines = [
+            f"\n{'='*70}",
+            f"DEBUG REPORT FOR VEHICLE {self.id}",
+            f"{'='*70}",
+            f"Final Status: {self.state.name}",
+            f"Final Position: {self.position_km:.1f} km",
+            f"Final SOC: {self.battery.current_soc:.1%}",
+            f"Total Distance: {self.total_distance_km:.1f} km",
+            f"Charging Stops: {self.charging_stops}",
+            f"Driver Type: {self.driver.behavior_type}",
+            f"\nDetailed Event History:",
+            f"{'-'*70}"
+        ]
+        
+        for i, entry in enumerate(self.detailed_history, 1):
+            lines.append(
+                f"{i:3d}. [{entry['event_type']:12s}] {entry['details'][:50]:50s} "
+                f"| pos={entry['position_km']:6.1f}km "
+                f"| SOC={entry['soc']:5.1%} "
+                f"| state={entry['state']}"
+            )
+        
+        # Analyze why stranded
+        if self.state == VehicleState.STRANDED:
+            lines.extend(self._analyze_stranding())
+        
+        lines.append(f"{'='*70}\n")
+        return "\n".join(lines)
+    
+    def _analyze_stranding(self) -> List[str]:
+        """Analyze why this vehicle got stranded."""
+        analysis = [
+            f"\n{'!'*70}",
+            "STRANDING ANALYSIS:",
+            f"{'!'*70}"
+        ]
+        
+        # Find last charging stop
+        last_charge_idx = None
+        for i, entry in enumerate(self.detailed_history):
+            if entry['event_type'] in ['CHARGE_START', 'CHARGE_COMPLETE']:
+                last_charge_idx = i
+        
+        if last_charge_idx:
+            charge_entry = self.detailed_history[last_charge_idx]
+            analysis.append(f"Last charging event: {charge_entry['event_type']} "
+                          f"at {charge_entry['position_km']:.1f}km, "
+                          f"SOC={charge_entry['soc']:.1%}")
+            
+            # Check what happened after charging
+            if last_charge_idx + 1 < len(self.detailed_history):
+                next_events = self.detailed_history[last_charge_idx+1:last_charge_idx+6]
+                analysis.append("Events after charging:")
+                for evt in next_events:
+                    analysis.append(f"  - {evt['event_type']}: {evt['details'][:60]}")
+        
+        # Check for abandonment events
+        abandon_events = [e for e in self.detailed_history if 'abandon' in e['event_type'].lower()]
+        if abandon_events:
+            analysis.append(f"\nWARNING: Vehicle abandoned queue {len(abandon_events)} times!")
+            for evt in abandon_events:
+                analysis.append(f"  Abandoned at {evt['position_km']:.1f}km, "
+                              f"SOC={evt['soc']:.1%}, reason={evt['details']}")
+        
+        # Check for missed stations
+        approach_events = [e for e in self.detailed_history if e['event_type'] == 'APPROACH']
+        if len(approach_events) > self.charging_stops:
+            analysis.append(f"\nWARNING: Approached {len(approach_events)} stations "
+                          f"but only charged {self.charging_stops} times!")
+        
+        # Calculate consumption pattern
+        if len(self.detailed_history) > 1:
+            total_dist = self.detailed_history[-1]['position_km'] - self.detailed_history[0]['position_km']
+            total_soc_drop = self.detailed_history[0]['soc'] - self.detailed_history[-1]['soc']
+            if total_dist > 0:
+                avg_consumption = (total_soc_drop * self.battery.capacity_kwh) / (total_dist / 100)
+                analysis.append(f"\nAverage consumption: {avg_consumption:.1f} kWh/100km")
+        
+        return analysis
     
     # ========================================================================
     # PHYSICAL DYNAMICS
@@ -398,10 +501,12 @@ class Vehicle:
         
         # Update speed
         speed_change = self.acceleration_ms2 * dt_seconds / 3.6  # km/h
+        old_speed = self.speed_kmh
         self.speed_kmh = max(0.0, self.speed_kmh + speed_change)
         
         # Update position
         distance_km = self.speed_kmh * dt_hours
+        old_position = self.position_km
         self.position_km += distance_km
         self.total_distance_km += distance_km
         
@@ -409,13 +514,22 @@ class Vehicle:
         consumption_rate = self.calculate_consumption_rate(self.speed_kmh)
         energy_consumed = consumption_rate * distance_km
         
+        old_soc = self.battery.current_soc
         success = self.battery.consume(energy_consumed)
         self.total_energy_consumed_kwh += energy_consumed
+        
+        # Log significant events
+        if old_soc > 0.3 and self.battery.current_soc <= 0.3:
+            self._log_event("LOW_BATTERY", f"SOC dropped to {self.battery.current_soc:.1%}")
+        if old_soc > 0.15 and self.battery.current_soc <= 0.15:
+            self._log_event("CRITICAL_BATTERY", f"SOC dropped to {self.battery.current_soc:.1%}")
         
         # Check for stranded condition
         if not success or self.battery.is_depleted:
             self.state = VehicleState.STRANDED
-            self._log_state("stranded", f"Battery depleted at {self.position_km:.1f}km")
+            self._log_event("STRANDED", 
+                          f"Battery depleted at position {self.position_km:.1f}km, "
+                          f"last speed={self.speed_kmh:.1f}km/h")
             return False
         
         return True
@@ -428,9 +542,13 @@ class Vehicle:
                   reason: str = ""):
         """Transition to new state with logging."""
         if self.state != new_state:
+            old_state = self.state
+            self._log_event("STATE_CHANGE", 
+                          f"{old_state.name} -> {new_state.name}: {reason}",
+                          {'old_state': old_state.name, 'new_state': new_state.name})
             self.state_history.append({
                 'time': timestamp,
-                'from': self.state,
+                'from': old_state,
                 'to': new_state,
                 'reason': reason,
                 'position': self.position_km,
@@ -457,6 +575,30 @@ class Vehicle:
         current_consumption = self.calculate_consumption_rate(self.speed_kmh)
         return self.battery.estimate_range_km(current_consumption)
     
+    def _get_conservative_consumption(self, speed_kmh: float) -> float:
+        """
+        Get consumption rate with safety margin for planning.
+        Uses standardized CONSUMPTION_SAFETY_FACTOR instead of arbitrary multipliers.
+        """
+        base_consumption = self.calculate_consumption_rate(speed_kmh)
+        return base_consumption * self.CONSUMPTION_SAFETY_FACTOR
+    
+    def _estimate_range_at_speed(self, speed_kmh: float, apply_safety: bool = True) -> float:
+        """
+        Unified range estimation with optional safety margin.
+        
+        Args:
+            speed_kmh: Speed for estimation
+            apply_safety: If True, applies CONSUMPTION_SAFETY_FACTOR (for planning)
+                         If False, uses raw consumption (for actual physics)
+        """
+        if apply_safety:
+            consumption = self._get_conservative_consumption(speed_kmh)
+        else:
+            consumption = self.calculate_consumption_rate(speed_kmh)
+        
+        return self.battery.estimate_range_km(consumption)
+    
     def can_reach_station(self, station_position_km: float,
                          buffer_km: Optional[float] = None) -> bool:
         """Check if vehicle can reach a station with safety buffer."""
@@ -466,114 +608,93 @@ class Vehicle:
         return self.get_range_estimate() >= required_range
     
     def can_physically_reach(self, position_km: float, at_highway_speed: bool = True) -> bool:
-        """Check if vehicle can physically reach a position (no buffer, just raw range).
+        """
+        Check if vehicle can physically reach a position.
         
         Args:
             position_km: Target position to reach
             at_highway_speed: If True, calculate range at driver's preferred highway speed
-                            (more realistic for post-charging driving). If False, use current speed.
         """
         distance = abs(position_km - self.position_km)
         
         if at_highway_speed:
             # Use driver's preferred speed for realistic range estimate
-            # This accounts for the fact that vehicle will accelerate to highway speed after exiting
             speed_for_estimate = self.driver.speed_preference_kmh
         else:
             speed_for_estimate = self.speed_kmh
             
-        consumption = self.calculate_consumption_rate(speed_for_estimate)
-        estimated_range = self.battery.estimate_range_km(consumption*1.2)  # Add 20% buffer for safety
+        # Use standardized method with 15% safety margin instead of 240%
+        estimated_range = self._estimate_range_at_speed(speed_for_estimate, apply_safety=True)
         
-        return estimated_range >= distance
-
-    '''
-    def can_physically_reach(self, position_km: float) -> bool:
-        """Check if vehicle can physically reach a position (no buffer, just raw range)."""
-        distance = abs(position_km - self.position_km)
-        return self.get_range_estimate() >= distance
-    '''
+        can_reach = estimated_range >= distance
+        
+        # Debug logging for critical decisions
+        if not can_reach and self.battery.current_soc < 0.4:
+            self._log_event("CANNOT_REACH", 
+                          f"Cannot reach {position_km:.1f}km (dist={distance:.1f}km, "
+                          f"range={estimated_range:.1f}km)",
+                          {'target': position_km, 'distance': distance, 
+                           'estimated_range': estimated_range})
+        
+        return can_reach
 
     def must_stop_at_station(self, current_station_km: float,
                              next_station_km: Optional[float],
                              highway_end_km: Optional[float] = None) -> bool:
         """
         Determine if vehicle MUST stop at this station to avoid stranding.
+        
         Returns True if skipping this station would result in stranding.
         """
         # First, can we even reach this station?
         if not self.can_physically_reach(current_station_km, at_highway_speed=False):
             return True  # Must try to stop here, already in trouble
 
-        # If there's a next station, check if we can reach it after passing this one
-        if next_station_km is not None:
-            # Calculate remaining range if we drive to current station and pass it
-            distance_to_current = abs(current_station_km - self.position_km)
-            
-            # Use highway speed for realistic estimate of range after passing
-            consumption_at_highway = self.calculate_consumption_rate(self.driver.speed_preference_kmh)
-            range_at_highway = self.battery.estimate_range_km(consumption_at_highway)
-            remaining_range_after_current = range_at_highway - distance_to_current
-            
-            distance_current_to_next = abs(next_station_km - current_station_km)
-
-            # Can we make it from current station to next station?
-            if remaining_range_after_current < distance_current_to_next:
-                return True  # Must stop here or we strand before next station
-
-        # If no next station, check if we can reach highway end
-        if next_station_km is None and highway_end_km is not None:
-            distance_to_current = abs(current_station_km - self.position_km)
-            
-            consumption_at_highway = self.calculate_consumption_rate(self.driver.speed_preference_kmh)
-            range_at_highway = self.battery.estimate_range_km(consumption_at_highway)
-            remaining_range_after_current = range_at_highway - distance_to_current
-            
-            distance_current_to_end = abs(highway_end_km - current_station_km)
-
-            if remaining_range_after_current < distance_current_to_end:
-                return True  # Must stop here or we strand before highway end
-
-        return False  # Safe to skip if we want to
-
-    '''
-    def must_stop_at_station(self, current_station_km: float,
-                             next_station_km: Optional[float],
-                             highway_end_km: Optional[float] = None) -> bool:
-        """
-        Determine if vehicle MUST stop at this station to avoid stranding.
-        Returns True if skipping this station would result in stranding.
-
-        A rational driver will always stop if:
-        - They cannot physically reach the next station (no buffer needed - survival mode)
-        - They cannot physically reach the highway end if no next station exists
-        """
-        # First, can we even reach this station?
-        if not self.can_physically_reach(current_station_km):
-            return True  # Must try to stop here, already in trouble
+        # Use standardized range estimation with safety margin
+        # This ensures consistency between "can I reach" and "must I stop" decisions
+        consumption_at_highway = self._get_conservative_consumption(self.driver.speed_preference_kmh)
+        range_at_highway = self.battery.estimate_range_km(consumption_at_highway)
 
         # If there's a next station, check if we can reach it after passing this one
         if next_station_km is not None:
             # Calculate remaining range if we drive to current station and pass it
             distance_to_current = abs(current_station_km - self.position_km)
-            remaining_range_after_current = self.get_range_estimate() - distance_to_current
+            remaining_range_after_current = range_at_highway - distance_to_current
             distance_current_to_next = abs(next_station_km - current_station_km)
 
-            # Can we make it from current station to next station?
-            if remaining_range_after_current < distance_current_to_next:
+            # Add mandatory SAFETY_MARGIN_KM (20km) to required distance
+            # This prevents the "15km short" problem
+            required_range_with_safety = distance_current_to_next + self.SAFETY_MARGIN_KM
+
+            # Can we make it from current station to next station with safety margin?
+            if remaining_range_after_current < required_range_with_safety:
+                self._log_event("MUST_STOP", 
+                              f"Cannot reach next station at {next_station_km:.1f}km "
+                              f"(need {required_range_with_safety:.1f}km, "
+                              f"have {remaining_range_after_current:.1f}km)",
+                              {'current_station': current_station_km,
+                               'next_station': next_station_km,
+                               'required_range': required_range_with_safety,
+                               'available_range': remaining_range_after_current})
                 return True  # Must stop here or we strand before next station
 
         # If no next station, check if we can reach highway end
         if next_station_km is None and highway_end_km is not None:
             distance_to_current = abs(current_station_km - self.position_km)
-            remaining_range_after_current = self.get_range_estimate() - distance_to_current
+            remaining_range_after_current = range_at_highway - distance_to_current
             distance_current_to_end = abs(highway_end_km - current_station_km)
 
-            if remaining_range_after_current < distance_current_to_end:
+            # Add safety margin for highway end too
+            required_range_with_safety = distance_current_to_end + self.SAFETY_MARGIN_KM
+
+            if remaining_range_after_current < required_range_with_safety:
+                self._log_event("MUST_STOP_END", 
+                              f"Cannot reach highway end at {highway_end_km:.1f}km",
+                              {'required_range': required_range_with_safety,
+                               'available_range': remaining_range_after_current})
                 return True  # Must stop here or we strand before highway end
 
         return False  # Safe to skip if we want to
-    '''
 
     def needs_charging(self, next_station_km: Optional[float] = None) -> bool:
         """Determine if vehicle needs to charge now."""
@@ -634,6 +755,7 @@ class Vehicle:
         self.assigned_charger_id = charger_id
         self.charging_stops += 1
         self.set_state(VehicleState.CHARGING, timestamp, f"at {charger_id}")
+        self._log_event("CHARGE_START", f"Charger {charger_id}, power={power_kw}kW")
     
     def charge_step(self, energy_kwh: float, timestamp: datetime) -> bool:
         """
@@ -643,6 +765,8 @@ class Vehicle:
         actual = self.battery.charge(energy_kwh)
         
         if self.battery.current_soc >= self.driver.target_soc:
+            self._log_event("CHARGE_TARGET_REACHED", 
+                          f"SOC={self.battery.current_soc:.1%}, target={self.driver.target_soc:.1%}")
             return True  # Charged enough
         
         return False
@@ -655,10 +779,13 @@ class Vehicle:
         self.target_station_id = None
         self.current_patience = self.driver.patience_base  # Reset patience
         self.set_state(VehicleState.EXITING, timestamp, "charging complete")
+        self._log_event("CHARGE_COMPLETE", 
+                      f"Duration={total_time_min:.1f}min, final SOC={self.battery.current_soc:.1%}")
     
     def abandon_charging(self, timestamp: datetime, reason: str):
         """Leave queue or charging early."""
-        self.set_state(VehicleState.CRUISING, timestamp, f"abandoned: {reason}")
+        self._log_event("ABANDON", f"Reason: {reason}")
+        self.set_state(VehicleState.EXITING, timestamp, f"abandoned: {reason}")
         self.target_station_id = None
         self.queue_entry_time = None
     
@@ -680,22 +807,6 @@ class Vehicle:
              environment: Optional[Dict] = None) -> Dict:
         """
         Execute one simulation step.
-
-        Args:
-            timestamp: Current simulation time
-            time_step_minutes: Duration of this step in minutes
-            environment: Dict with optional keys:
-                - speed_limit_kmh: Speed limit (default 130)
-                - traffic_speed_kmh: Current traffic speed (optional)
-                - upcoming_stations: List of station info dicts
-                - station_comfort: Comfort level 0-1 (default 0.5)
-                - queue_position: Current position in queue
-                - estimated_wait: Estimated wait time in minutes
-                - alternative_available: Whether alternative stations exist
-                - charging_complete: Whether charging session finished
-                - session_duration: Duration of completed session
-
-        Returns dict with state changes and alerts.
         """
         result = {
             'state_changed': False,
@@ -716,7 +827,7 @@ class Vehicle:
         env.setdefault('estimated_wait', 30)
         env.setdefault('alternative_available', False)
         env.setdefault('highway_end_km', None)
-        env.setdefault('can_reach_next_station', True)  # For abandonment decisions
+        env.setdefault('can_reach_next_station', True)
 
         # Physics update (unless charging/queued)
         if self.state in [VehicleState.CRUISING, VehicleState.APPROACHING,
@@ -762,6 +873,9 @@ class Vehicle:
                         reason = "must charge (no alternative)" if must_stop else "seeking charging"
                         self.set_state(VehicleState.APPROACHING, timestamp,
                                      f"{reason} at {self.target_station_id}")
+                        self._log_event("APPROACH", 
+                                      f"Station at {station_km:.1f}km, reason={reason}, "
+                                      f"next_station={next_station_km}")
                         result['state_changed'] = True
                         result['needs_decision'] = True
                         result['decision_options'] = upcoming_stations
@@ -783,6 +897,8 @@ class Vehicle:
 
                         self.set_state(VehicleState.APPROACHING, timestamp,
                                      f"approaching {station_id}")
+                        self._log_event("APPROACH_NEAR", 
+                                      f"Within {distance:.1f}km of {station_id}, must_stop={must_stop}")
                         result['state_changed'] = True
                     break
 
@@ -810,15 +926,18 @@ class Vehicle:
                 comfort = env['station_comfort']
                 self.update_patience(wait_min, comfort)
 
-                # CRITICAL: Can we reach the next station if we abandon?
-                # A rational driver will NEVER abandon if they can't reach the next station
-                can_reach_next = env.get('can_reach_next_station', True)
-
-                if not can_reach_next:
-                    # Cannot abandon - would strand. Stay in queue no matter what.
-                    pass
+                # CRITICAL FIX: Check if we can reach next station before allowing abandonment
+                can_abandon_safely = env.get('can_reach_next_station', True)
+                
+                # If we cannot reach next station, we MUST stay in queue
+                if not can_abandon_safely:
+                    # Force patience to stay above critical level
+                    self.current_patience = max(self.current_patience, 0.15)
+                    self._log_event("QUEUE_STUCK", 
+                                  "Cannot abandon - would strand. Staying in queue.")
+                    # Skip abandonment check entirely
                 else:
-                    # Check abandonment only if alternative is reachable
+                    # Safe to abandon, check patience
                     should_abandon = self.driver.decide_to_abort(
                         self.current_patience,
                         env['queue_position'],
@@ -827,6 +946,10 @@ class Vehicle:
                     )
 
                     if should_abandon:
+                        self._log_event("ABANDON_DECISION", 
+                                      f"Patience={self.current_patience:.2f}, "
+                                      f"queue_pos={env['queue_position']}, "
+                                      f"wait={env['estimated_wait']:.1f}min")
                         self.abandon_charging(timestamp, "patience depleted")
                         result['abandoned'] = True
                         result['state_changed'] = True
@@ -887,116 +1010,3 @@ class Vehicle:
         return (f"Vehicle({self.id}, SOC={self.battery.current_soc:.1%}, "
                 f"pos={self.position_km:.1f}km, {self.state.name}, "
                 f"driver={self.driver.behavior_type})")
-
-
-# =============================================================================
-# EXAMPLE USAGE
-# =============================================================================
-
-def demo():
-    """Demonstrate Vehicle and DriverBehavior functionality."""
-    print("=" * 70)
-    print("VEHICLE & DRIVER BEHAVIOR DEMO")
-    print("=" * 70)
-    
-    # Create different driver types
-    drivers = {
-        'conservative': DriverBehavior(
-            behavior_type='conservative',
-            patience_base=0.8,
-            risk_tolerance=0.2,
-            buffer_margin_km=80.0,
-            target_soc=0.9
-        ),
-        'aggressive': DriverBehavior(
-            behavior_type='aggressive',
-            patience_base=0.4,
-            risk_tolerance=0.8,
-            speed_preference_kmh=140.0,
-            acceleration_aggression=0.8,
-            buffer_margin_km=20.0,
-            target_soc=0.6
-        ),
-        'range_anxious': DriverBehavior(
-            behavior_type='range_anxious',
-            patience_base=0.6,
-            risk_tolerance=0.1,
-            buffer_margin_km=100.0,
-            min_charge_to_continue=0.4,
-            social_influence=0.7
-        )
-    }
-    
-    # Create vehicles with different drivers
-    vehicles = []
-    start_time = datetime(2024, 1, 15, 9, 0)
-    
-    print("\n--- Creating Vehicles ---")
-    for driver_type, driver in drivers.items():
-        vehicle = Vehicle(
-            battery_capacity_kwh=75.0,
-            initial_soc=0.45,  # Start with low battery to force decisions
-            driver_behavior=driver,
-            initial_position_km=100.0,
-            initial_speed_kmh=120.0
-        )
-        vehicles.append((driver_type, vehicle))
-        print(f"\n{driver_type.upper()}:")
-        print(f"  Driver: {driver}")
-        print(f"  Vehicle: {vehicle}")
-        print(f"  Range estimate: {vehicle.get_range_estimate():.1f} km")
-        print(f"  Needs charging: {vehicle.needs_charging(next_station_km=150.0)}")
-    
-    # Simulate driving
-    print("\n--- Simulating 10 minutes of driving ---")
-    for minute in range(10):
-        timestamp = start_time + timedelta(minutes=minute)
-        print(f"\n{timestamp.strftime('%H:%M')}:")
-        
-        for driver_type, vehicle in vehicles:
-            result = vehicle.step(
-                timestamp=timestamp,
-                time_step_minutes=1.0,
-                environment={
-                    'speed_limit_kmh': 130.0,
-                    'upcoming_stations': [
-                        {'id': 'STA-001', 'location_km': 125.0, 
-                         'estimated_wait': 15.0, 'price_per_kwh': 0.45}
-                    ]
-                }
-            )
-            
-            status = vehicle.get_status()
-            print(f"  {driver_type:12s}: pos={status['position_km']:6.1f}km, "
-                  f"SOC={status['soc']:.1%}, {status['state'][:4]}, "
-                  f"pat={status['current_patience']:.2f}")
-            
-            if result['needs_decision']:
-                print(f"    *** Decision needed! ***")
-    
-    # Test consumption rates
-    print("\n--- Consumption vs Speed ---")
-    test_vehicle = Vehicle(battery_capacity_kwh=60.0, initial_soc=0.8)
-    for speed in [30, 50, 80, 100, 120, 150]:
-        rate = test_vehicle.calculate_consumption_rate(speed)
-        print(f"  {speed:3d} km/h: {rate*100:.2f} kWh/100km")
-    
-    # Test patience decay
-    print("\n--- Patience Decay Simulation ---")
-    anxious_driver = drivers['range_anxious']
-    patience = anxious_driver.patience_base
-    for wait in [0, 5, 10, 15, 20, 25, 30]:
-        new_patience = anxious_driver.update_patience(
-            patience, wait, comfort_level=0.5, battery_urgency=0.8
-        )
-        print(f"  Wait {wait:2d}min: patience {patience:.2f} → {new_patience:.2f}")
-        patience = new_patience
-    
-    print("\n--- Final Status ---")
-    for driver_type, vehicle in vehicles:
-        print(f"\n{driver_type}:")
-        print(f"  {vehicle.get_status()}")
-
-
-if __name__ == "__main__":
-    demo()
