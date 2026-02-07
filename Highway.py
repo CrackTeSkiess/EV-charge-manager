@@ -67,6 +67,7 @@ class Highway:
         self.charging_areas: Dict[str, ChargingArea] = {}
         self.station_positions: Dict[float, str] = {}  # km -> area_id
         self._sorted_stations: List[float] = []  # cached sorted station positions
+        self._next_station_map: Dict[float, Optional[float]] = {}  # station_km -> next_station_km
         self._register_charging_areas(charging_areas or [])
 
         # Road segmentation (for variable speed limits, etc.)
@@ -75,6 +76,7 @@ class Highway:
         # Vehicle management - Highway still owns Vehicle objects for physics
         self.vehicles: Dict[str, Vehicle] = {}  # All active vehicles
         self.vehicles_by_tile: Dict[int, Set[str]] = defaultdict(set)
+        self._vehicle_tile: Dict[str, int] = {}  # vehicle_id -> current tile index
 
         # Legacy lists - now just for reference, tracker is source of truth
         self.vehicles_exiting: List[Vehicle] = []
@@ -94,7 +96,10 @@ class Highway:
         }
 
         self.current_time: Optional[datetime] = None
-        
+
+        # Per-step cache of station broadcast states (invalidated each step)
+        self._broadcast_cache: Dict[str, Dict] = {}
+
         # DEBUG: Track all events for analysis
         self.event_log: List[Dict[str, Any]] = []
 
@@ -133,6 +138,13 @@ class Highway:
             self.charging_areas[area.id] = area
             self.station_positions[area.location_km] = area.id
         self._sorted_stations = sorted(self.station_positions.keys())
+        # Build next-station lookup: station_km -> next_station_km (or None)
+        self._next_station_map = {}
+        for i, km in enumerate(self._sorted_stations):
+            if i + 1 < len(self._sorted_stations):
+                self._next_station_map[km] = self._sorted_stations[i + 1]
+            else:
+                self._next_station_map[km] = None
 
     def _create_default_segments(self) -> List[HighwaySegment]:
         """Create default uniform segmentation."""
@@ -163,17 +175,19 @@ class Highway:
 
     def _update_vehicle_spatial_index(self, vehicle: Vehicle) -> None:
         """Update which tile a vehicle belongs to."""
-        old_tiles = [t for t, ids in self.vehicles_by_tile.items()
-                    if vehicle.id in ids]
-
         new_tile = self._get_tile(vehicle.position_km)
+        old_tile = self._vehicle_tile.get(vehicle.id)
 
-        # Remove from old tiles
-        for tile in old_tiles:
-            self.vehicles_by_tile[tile].discard(vehicle.id)
+        if old_tile == new_tile:
+            return  # No change needed
+
+        # Remove from old tile
+        if old_tile is not None:
+            self.vehicles_by_tile[old_tile].discard(vehicle.id)
 
         # Add to new tile
         self.vehicles_by_tile[new_tile].add(vehicle.id)
+        self._vehicle_tile[vehicle.id] = new_tile
 
     def get_vehicles_near_position(self, position_km: float,
                                    radius_km: float = 10.0) -> List[Vehicle]:
@@ -188,12 +202,15 @@ class Highway:
 
     def get_stations_in_range(self, position_km: float,
                              lookahead_km: float = 50.0) -> List[Dict]:
-        """Get charging stations ahead within range."""
+        """Get charging stations ahead within range. Uses per-step broadcast cache."""
         stations = []
         for km, area_id in self.station_positions.items():
             if position_km < km <= position_km + lookahead_km:
-                area = self.charging_areas[area_id]
-                stations.append(area.get_broadcast_state())
+                state = self._broadcast_cache.get(area_id)
+                if state is None:
+                    state = self.charging_areas[area_id].get_broadcast_state()
+                    self._broadcast_cache[area_id] = state
+                stations.append(state)
         return sorted(stations, key=lambda s: s['location_km'])
 
     def get_segment_at(self, position_km: float) -> HighwaySegment:
@@ -244,8 +261,9 @@ class Highway:
         vehicle = self.vehicles.pop(vehicle_id)
 
         # Clean up spatial index
-        for tile in list(self.vehicles_by_tile.keys()):
-            self.vehicles_by_tile[tile].discard(vehicle_id)
+        old_tile = self._vehicle_tile.pop(vehicle_id, None)
+        if old_tile is not None:
+            self.vehicles_by_tile[old_tile].discard(vehicle_id)
 
         # Clean up station associations
         if vehicle_id in self.vehicles_at_station:
@@ -287,9 +305,6 @@ class Highway:
         if vehicle.state not in [VehicleState.APPROACHING, VehicleState.DECIDING]:
             return None
 
-        # Get sorted list of station positions
-        sorted_stations = self._sorted_stations
-
         # Find if at station location (within detection threshold)
         # INCREASED from 0.5 km to 3.0 km to prevent vehicles from jumping over
         # At 120 km/h, vehicles move 2 km per minute, so 3 km ensures detection
@@ -298,12 +313,7 @@ class Highway:
         for km, area_id in self.station_positions.items():
             if abs(vehicle.position_km - km) < DETECTION_THRESHOLD_KM:
                 # Vehicle is at station location
-                # Find the next station after this one
-                next_station_km = None
-                for station_km in sorted_stations:
-                    if station_km > km + 0.5:  # Must be meaningfully ahead
-                        next_station_km = station_km
-                        break
+                next_station_km = self._next_station_map.get(km)
 
                 # Check if vehicle MUST stop here (can't reach next station or highway end)
                 must_stop = vehicle.must_stop_at_station(km, next_station_km, self.length_km)
@@ -341,13 +351,8 @@ class Highway:
         area = self.charging_areas[area_id]
 
         # Check if this is a must-stop situation
-        sorted_stations = self._sorted_stations
         current_station_km = area.location_km
-        next_station_km = None
-        for station_km in sorted_stations:
-            if station_km > current_station_km + 0.5:
-                next_station_km = station_km
-                break
+        next_station_km = self._next_station_map.get(current_station_km)
 
         must_stop = vehicle.must_stop_at_station(current_station_km, next_station_km, self.length_km)
 
@@ -380,14 +385,8 @@ class Highway:
                 # Start session (simplified - would get energy need from vehicle)
                 # Calculate energy needed - SAFETY FIRST
                 # Must have enough to reach next station or highway end
-                sorted_stations = self._sorted_stations
-                current_station_km = area.location_km
-                next_station_km = None
-                for station_km in sorted_stations:
-                    if station_km > current_station_km + 0.5:
-                        next_station_km = station_km
-                        break
-                
+                # (next_station_km already computed above via _next_station_map)
+
                 # Calculate energy needed for safety (to reach next destination)
                 if next_station_km is not None:
                     distance_to_next = abs(next_station_km - current_station_km)
@@ -549,9 +548,6 @@ class Highway:
         """
         events = []
 
-        # Get sorted station positions for next-station lookups
-        sorted_stations = self._sorted_stations
-
         for vehicle_id, (area_id, entry_time) in list(self.vehicles_in_queue.items()):
             vehicle = self.vehicles.get(vehicle_id)
             if not vehicle:
@@ -607,11 +603,7 @@ class Highway:
                 continue
 
             # Find the next station after this one
-            next_station_km = None
-            for station_km in sorted_stations:
-                if station_km > current_station_km + 0.5:
-                    next_station_km = station_km
-                    break
+            next_station_km = self._next_station_map.get(current_station_km)
 
             # === CRITICAL SAFETY CHECKS ===
             # Check 1: If battery is critical (< 20%), CANNOT abandon regardless of range calculation
@@ -722,9 +714,6 @@ class Highway:
         the next station or the highway end.
         """
         events = []
-        
-        # Get sorted station positions for next-station lookups
-        sorted_stations = self._sorted_stations
 
         for vehicle_id, area_id in list(self.vehicles_at_station.items()):
             vehicle = self.vehicles.get(vehicle_id)
@@ -735,13 +724,9 @@ class Highway:
 
             area = self.charging_areas[area_id]
             current_station_km = area.location_km
-            
-            # Find the next station after this one (or None if this is the last)
-            next_station_km = None
-            for station_km in sorted_stations:
-                if station_km > current_station_km + 0.5:
-                    next_station_km = station_km
-                    break
+
+            # Precomputed next-station lookup
+            next_station_km = self._next_station_map.get(current_station_km)
 
             # Find which charger has this vehicle
             charger = None
@@ -883,6 +868,7 @@ class Highway:
         6. Clean up exits/stranded
         """
         self.current_time = timestamp
+        self._broadcast_cache.clear()  # Invalidate per-step station state cache
         step_events = {
             'handoffs': [],
             'abandonments': [],
@@ -921,11 +907,7 @@ class Highway:
             forced_handoff = False
             for station_km, area_id in self.station_positions.items():
                 if 0 < vehicle.position_km - station_km <= 2.0:
-                    next_station_km = None
-                    for sk in self._sorted_stations:
-                        if sk > station_km + 0.5:
-                            next_station_km = sk
-                            break
+                    next_station_km = self._next_station_map.get(station_km)
                     if vehicle.must_stop_at_station(station_km, next_station_km, self.length_km):
                         self._log_highway_event("MISSED_STATION",
                                                f"Forced back to station at km {station_km}",

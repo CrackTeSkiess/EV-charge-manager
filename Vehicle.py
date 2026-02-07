@@ -303,6 +303,9 @@ class Vehicle:
         self.charging_stops = 0
         self.total_charging_time_min = 0.0
         
+        # Consumption rate cache: discretized speed (int km/h) -> kWh/km
+        self._consumption_cache: Dict[int, float] = {}
+
         # DEBUG: Detailed history for stranded vehicle analysis (optional)
         self.track_history = track_history
         self.detailed_history: List[Dict[str, Any]] = []
@@ -429,41 +432,50 @@ class Vehicle:
         """
         Calculate energy consumption rate in kWh per km at given speed.
         Speed-dependent discharge rate using physics model.
+        Results are cached by integer speed (driver aggression is constant).
         """
         if speed_kmh <= 0:
             return 0.0
-        
+
+        # Cache lookup by integer speed (sufficient precision)
+        speed_key = int(speed_kmh)
+        cached = self._consumption_cache.get(speed_key)
+        if cached is not None:
+            return cached
+
         speed_ms = speed_kmh / 3.6  # Convert to m/s
-        
+
         # Aerodynamic drag (dominant at high speed)
         # P_drag = 0.5 * rho * Cd * A * v³
-        drag_power = (0.5 * self.AIR_DENSITY * self.DRAG_COEFFICIENT * 
+        drag_power = (0.5 * self.AIR_DENSITY * self.DRAG_COEFFICIENT *
                      self.FRONTAL_AREA_M2 * speed_ms ** 3)
-        
+
         # Rolling resistance (constant)
         # P_roll = Crr * m * g * v
-        rolling_power = (self.ROLLING_RESISTANCE * self.VEHICLE_MASS_KG * 
+        rolling_power = (self.ROLLING_RESISTANCE * self.VEHICLE_MASS_KG *
                         self.GRAVITY * speed_ms)
-        
+
         # Drivetrain efficiency (speed-dependent, peak around 50-80 km/h)
         efficiency = self._motor_efficiency(speed_kmh)
-        
+
         # Total power in watts
         total_power_w = (drag_power + rolling_power) / efficiency
-        
+
         # Add auxiliary loads (climate, electronics) - ~1-3 kW depending on weather
         aux_power_w = 1500  # Simplified constant
-        
+
         total_power_kw = (total_power_w + aux_power_w) / 1000
-        
+
         # Convert to kWh per km
         time_per_km_h = 1.0 / speed_kmh  # hours per km
         consumption_kwh_per_km = total_power_kw * time_per_km_h
-        
+
         # Apply driver behavior modifier (aggressive driving)
         aggression_penalty = 1.0 + (self.driver.acceleration_aggression - 0.5) * 0.3
-                
-        return consumption_kwh_per_km * aggression_penalty
+
+        result = consumption_kwh_per_km * aggression_penalty
+        self._consumption_cache[speed_key] = result
+        return result
     
     def _motor_efficiency(self, speed_kmh: float) -> float:
         """Electric motor efficiency curve by speed."""
