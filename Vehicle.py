@@ -823,7 +823,7 @@ class Vehicle:
     # ========================================================================
     
     def step(self, timestamp: datetime, time_step_minutes: float = 1.0,
-             environment: Optional[Dict] = None) -> Dict:
+             environment: Optional[Dict] = None, skip_physics: bool = False) -> Dict:
         """
         Execute one simulation step.
         """
@@ -848,18 +848,19 @@ class Vehicle:
         env.setdefault('highway_end_km', None)
         env.setdefault('can_reach_next_station', True)
 
-        # Physics update (unless charging/queued)
+        # Physics update (unless charging/queued or already done in batch)
         if self.state in [VehicleState.CRUISING, VehicleState.APPROACHING,
                          VehicleState.EXITING]:
 
-            speed_limit = env['speed_limit_kmh']
-            traffic_speed = env.get('traffic_speed_kmh')  # Optional, can be None
+            if not skip_physics:
+                speed_limit = env['speed_limit_kmh']
+                traffic_speed = env.get('traffic_speed_kmh')  # Optional, can be None
 
-            success = self.update_physics(time_step_minutes, speed_limit, traffic_speed)
+                success = self.update_physics(time_step_minutes, speed_limit, traffic_speed)
 
-            if not success:
-                result['stranded'] = True
-                return result
+                if not success:
+                    result['stranded'] = True
+                    return result
 
             # Check for station approach and proactive charging decision
             upcoming_stations = env['upcoming_stations']

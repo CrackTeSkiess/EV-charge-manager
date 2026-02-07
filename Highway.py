@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import bisect
 import uuid
+import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Set, Tuple, Callable, TYPE_CHECKING, Any
 from collections import defaultdict
@@ -863,6 +864,136 @@ class Highway:
         return events
 
     # ========================================================================
+    # VECTORIZED PHYSICS
+    # ========================================================================
+
+    def _batch_driving_physics(
+        self,
+        vehicles: List[Vehicle],
+        effective_speed_limits: np.ndarray,
+        time_step_minutes: float
+    ) -> Set[str]:
+        """
+        Vectorized physics update for all driving vehicles using numpy.
+        Updates speed, position, and battery for each vehicle in batch.
+        Returns set of vehicle IDs that became stranded.
+        """
+        n = len(vehicles)
+        if n == 0:
+            return set()
+
+        dt_hours = time_step_minutes / 60.0
+        dt_seconds = time_step_minutes * 60.0
+
+        # Extract current state into numpy arrays
+        speeds = np.empty(n)
+        positions = np.empty(n)
+        battery_kwh = np.empty(n)
+        battery_cap_eff = np.empty(n)
+        battery_min_soc = np.empty(n)
+        pref_speeds = np.empty(n)
+        aggression = np.empty(n)
+
+        for i, v in enumerate(vehicles):
+            speeds[i] = v.speed_kmh
+            positions[i] = v.position_km
+            battery_kwh[i] = v.battery.current_kwh
+            battery_cap_eff[i] = v.battery.capacity_kwh * v.battery.degradation_factor
+            battery_min_soc[i] = v.battery.min_operating_soc
+            pref_speeds[i] = v.driver.speed_preference_kmh
+            aggression[i] = v.driver.acceleration_aggression
+
+        old_soc = battery_kwh / battery_cap_eff
+
+        # --- Target speed (vectorized DriverBehavior.calculate_desired_speed) ---
+        base = np.minimum(pref_speeds, effective_speed_limits + 10.0)
+        aggression_bonus = 1.0 + (aggression - 0.5) * 0.2
+        desired = base * aggression_bonus
+        target_speeds = np.clip(desired, 20.0, effective_speed_limits + 20.0)
+
+        # --- Acceleration ---
+        speed_diff = target_speeds - speeds
+        accel = np.where(
+            speed_diff > 0,
+            np.minimum(speed_diff / dt_hours / 3.6, Vehicle.MAX_ACCELERATION_MS2),
+            np.maximum(speed_diff / dt_hours / 3.6, Vehicle.COMFORT_DECELERATION_MS2)
+        )
+
+        # --- Update speed ---
+        speed_change = accel * dt_seconds / 3.6
+        new_speeds = np.maximum(0.0, speeds + speed_change)
+
+        # --- Update position ---
+        distance = new_speeds * dt_hours
+        new_positions = positions + distance
+
+        # --- Consumption rate (vectorized physics model) ---
+        speed_ms = new_speeds / 3.6
+
+        # Aerodynamic drag: P = 0.5 * rho * Cd * A * v^3
+        drag_power = (0.5 * Vehicle.AIR_DENSITY * Vehicle.DRAG_COEFFICIENT *
+                      Vehicle.FRONTAL_AREA_M2 * speed_ms ** 3)
+
+        # Rolling resistance: P = Crr * m * g * v
+        rolling_power = (Vehicle.ROLLING_RESISTANCE * Vehicle.VEHICLE_MASS_KG *
+                         Vehicle.GRAVITY * speed_ms)
+
+        # Motor efficiency (piecewise, vectorized)
+        efficiency = np.where(
+            new_speeds < 10, 0.75,
+            np.where(new_speeds < 60,
+                     0.90 + (new_speeds - 10.0) / 50.0 * 0.05,
+                     np.where(new_speeds < 120,
+                              0.95 - (new_speeds - 60.0) / 60.0 * 0.10,
+                              0.85 - (new_speeds - 120.0) / 60.0 * 0.15)))
+
+        # Total power (mechanical + aux 1.5kW)
+        total_power_kw = ((drag_power + rolling_power) / efficiency + 1500.0) / 1000.0
+
+        # Energy per km (handle speed=0 to avoid division by zero)
+        consumption_per_km = np.where(new_speeds > 0, total_power_kw / new_speeds, 0.0)
+
+        # Aggression penalty
+        consumption_per_km *= 1.0 + (aggression - 0.5) * 0.3
+
+        # Energy consumed this step
+        energy_consumed = consumption_per_km * distance
+
+        # --- Battery drain ---
+        new_battery_kwh = battery_kwh - energy_consumed
+        depleted = new_battery_kwh <= 0
+        new_battery_kwh = np.maximum(new_battery_kwh, 0.0)
+        new_soc = np.where(battery_cap_eff > 0, new_battery_kwh / battery_cap_eff, 0.0)
+        stranded_mask = depleted | (new_soc <= battery_min_soc)
+
+        # --- Write results back to vehicle objects ---
+        stranded_ids: Set[str] = set()
+        for i, v in enumerate(vehicles):
+            v.speed_kmh = float(new_speeds[i])
+            v.position_km = float(new_positions[i])
+            v.acceleration_ms2 = float(accel[i])
+            v.target_speed_kmh = float(target_speeds[i])
+            v.total_distance_km += float(distance[i])
+            v.total_energy_consumed_kwh += float(energy_consumed[i])
+            v.battery.current_kwh = float(new_battery_kwh[i])
+            v.battery.current_soc = float(new_soc[i])
+
+            # Low battery logging
+            if old_soc[i] > 0.3 and new_soc[i] <= 0.3:
+                v._log_event("LOW_BATTERY", f"SOC dropped to {new_soc[i]:.1%}")
+            if old_soc[i] > 0.15 and new_soc[i] <= 0.15:
+                v._log_event("CRITICAL_BATTERY", f"SOC dropped to {new_soc[i]:.1%}")
+
+            if stranded_mask[i]:
+                v.state = VehicleState.STRANDED
+                v._log_event("STRANDED",
+                            f"Battery depleted at position {v.position_km:.1f}km, "
+                            f"last speed={v.speed_kmh:.1f}km/h")
+                stranded_ids.add(v.id)
+
+        return stranded_ids
+
+    # ========================================================================
     # MAIN SIMULATION STEP
     # ========================================================================
 
@@ -907,6 +1038,27 @@ class Highway:
         # 4. Update driving vehicles
         vehicles_to_remove = []
 
+        # Optional batch pre-step: vectorize physics for large vehicle counts
+        BATCH_THRESHOLD = 200
+        batch_done = False
+        stranded_ids: Set[str] = set()
+        driving_count = len(self.vehicles) - len(self.vehicles_at_station) - len(self.vehicles_in_queue)
+
+        if driving_count >= BATCH_THRESHOLD:
+            driving_list = []
+            speed_limits_list = []
+            for vid, v in self.vehicles.items():
+                if vid not in self.vehicles_at_station and vid not in self.vehicles_in_queue:
+                    driving_list.append(v)
+                    speed_limits_list.append(
+                        self.get_segment_at(v.position_km).speed_limit_kmh
+                    )
+            stranded_ids = self._batch_driving_physics(
+                driving_list, np.array(speed_limits_list, dtype=np.float64),
+                time_step_minutes
+            )
+            batch_done = True
+
         for vehicle_id, vehicle in list(self.vehicles.items()):
             # Skip if at station
             if vehicle_id in self.vehicles_at_station or \
@@ -948,12 +1100,15 @@ class Highway:
             lookahead = max(100.0, min(vehicle_range * 1.5, 300.0))  # 100-300km lookahead
             upcoming = self.get_stations_in_range(vehicle.position_km, lookahead)
 
-            # Traffic speed (simplified - average of nearby vehicles)
-            nearby = self.get_vehicles_near_position(vehicle.position_km, 2.0)
-            avg_speed = sum(v.speed_kmh for v in nearby) / max(1, len(nearby))
-            traffic_speed = avg_speed if nearby else None
+            if not batch_done:
+                # Traffic speed (simplified - average of nearby vehicles)
+                nearby = self.get_vehicles_near_position(vehicle.position_km, 2.0)
+                avg_speed = sum(v.speed_kmh for v in nearby) / max(1, len(nearby))
+                traffic_speed = avg_speed if nearby else None
+            else:
+                traffic_speed = None  # Physics already done by batch
 
-            # Execute vehicle step with full environment info
+            # Execute vehicle step (physics + decisions, or decisions only if batched)
             result = vehicle.step(
                 timestamp=timestamp,
                 time_step_minutes=time_step_minutes,
@@ -963,7 +1118,8 @@ class Highway:
                     'upcoming_stations': upcoming,
                     'station_comfort': 0.5,  # Would be dynamic
                     'highway_end_km': self.length_km  # For must-stop calculations
-                }
+                },
+                skip_physics=batch_done
             )
 
             # Update spatial index
@@ -1000,7 +1156,7 @@ class Highway:
             # Check for exit or stranding
             if vehicle.position_km >= self.length_km:
                 vehicles_to_remove.append((vehicle_id, "exit"))
-            elif result.get('stranded'):
+            elif result.get('stranded') or vehicle_id in stranded_ids:
                 vehicles_to_remove.append((vehicle_id, "stranded"))
 
         # 5. Remove exited/stranded vehicles
