@@ -5,6 +5,7 @@ Road infrastructure managing vehicle movement and charging area coordination.
 
 from __future__ import annotations
 
+import bisect
 import uuid
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Set, Tuple, Callable, TYPE_CHECKING, Any
@@ -72,6 +73,8 @@ class Highway:
 
         # Road segmentation (for variable speed limits, etc.)
         self.segments = segments or self._create_default_segments()
+        # Precompute segment start positions for bisect lookup
+        self._segment_starts: List[float] = [seg.start_km for seg in self.segments]
 
         # Vehicle management - Highway still owns Vehicle objects for physics
         self.vehicles: Dict[str, Vehicle] = {}  # All active vehicles
@@ -100,13 +103,16 @@ class Highway:
         # Per-step cache of station broadcast states (invalidated each step)
         self._broadcast_cache: Dict[str, Dict] = {}
 
-        # DEBUG: Track all events for analysis
+        # DEBUG: Track all events for analysis (disabled by default for performance)
+        self.enable_event_log = False
         self.event_log: List[Dict[str, Any]] = []
 
-    def _log_highway_event(self, event_type: str, details: str, 
+    def _log_highway_event(self, event_type: str, details: str,
                           vehicle_id: Optional[str] = None,
                           extra_data: Optional[Dict] = None) -> None:
         """Log highway-level events for debugging."""
+        if not self.enable_event_log:
+            return
         entry = {
             'timestamp': datetime.now().isoformat(),
             'event_type': event_type,
@@ -202,23 +208,27 @@ class Highway:
 
     def get_stations_in_range(self, position_km: float,
                              lookahead_km: float = 50.0) -> List[Dict]:
-        """Get charging stations ahead within range. Uses per-step broadcast cache."""
+        """Get charging stations ahead within range (bisect + broadcast cache).
+        Returns stations already sorted by location (from _sorted_stations order)."""
+        lo = bisect.bisect_right(self._sorted_stations, position_km)
+        hi = bisect.bisect_right(self._sorted_stations, position_km + lookahead_km)
         stations = []
-        for km, area_id in self.station_positions.items():
-            if position_km < km <= position_km + lookahead_km:
-                state = self._broadcast_cache.get(area_id)
-                if state is None:
-                    state = self.charging_areas[area_id].get_broadcast_state()
-                    self._broadcast_cache[area_id] = state
-                stations.append(state)
-        return sorted(stations, key=lambda s: s['location_km'])
+        for i in range(lo, hi):
+            km = self._sorted_stations[i]
+            area_id = self.station_positions[km]
+            state = self._broadcast_cache.get(area_id)
+            if state is None:
+                state = self.charging_areas[area_id].get_broadcast_state()
+                self._broadcast_cache[area_id] = state
+            stations.append(state)
+        return stations  # Already sorted since _sorted_stations is sorted
 
     def get_segment_at(self, position_km: float) -> HighwaySegment:
-        """Get road segment for position."""
-        for seg in self.segments:
-            if seg.start_km <= position_km < seg.end_km:
-                return seg
-        return self.segments[-1] if self.segments else HighwaySegment(0, self.length_km)
+        """Get road segment for position (O(log N) via bisect)."""
+        if not self.segments:
+            return HighwaySegment(0, self.length_km)
+        idx = bisect.bisect_right(self._segment_starts, position_km) - 1
+        return self.segments[max(0, idx)]
 
     # ========================================================================
     # VEHICLE LIFECYCLE
@@ -903,10 +913,15 @@ class Highway:
                vehicle_id in self.vehicles_in_queue:
                 continue
 
-            # Check if vehicle just passed a station without stopping
+            # Check if vehicle just passed a station without stopping (bisect for nearby)
             forced_handoff = False
-            for station_km, area_id in self.station_positions.items():
-                if 0 < vehicle.position_km - station_km <= 2.0:
+            pos = vehicle.position_km
+            lo = bisect.bisect_right(self._sorted_stations, pos - 2.0)
+            hi = bisect.bisect_right(self._sorted_stations, pos)
+            for idx in range(lo, hi):
+                station_km = self._sorted_stations[idx]
+                if 0 < pos - station_km <= 2.0:
+                    area_id = self.station_positions[station_km]
                     next_station_km = self._next_station_map.get(station_km)
                     if vehicle.must_stop_at_station(station_km, next_station_km, self.length_km):
                         self._log_highway_event("MISSED_STATION",

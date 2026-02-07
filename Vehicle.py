@@ -104,7 +104,7 @@ class DriverBehavior:
     """
     
     # Identification
-    driver_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    driver_id: str = field(default_factory=lambda: str(uuid.uuid4())[:12])
     behavior_type: str = "balanced"  # conservative, balanced, aggressive, range_anxious
     
     # Fuzzy behavioral parameters (0-1 scales, interpreted via fuzzy logic later)
@@ -260,7 +260,7 @@ class Vehicle:
         initial_speed_kmh: float = 0.0,
         track_history: bool = False
     ):
-        self.id = vehicle_id or str(uuid.uuid4())[:8]
+        self.id = vehicle_id or str(uuid.uuid4())[:12]
         
         # Battery initialization with random SOC if not specified
         if initial_soc is None:
@@ -865,10 +865,9 @@ class Vehicle:
             upcoming_stations = env['upcoming_stations']
             highway_end_km = env.get('highway_end_km')
 
-            # Sort stations by distance (closest first)
+            # Filter stations still ahead after physics update (already sorted by location)
             stations_ahead = [s for s in upcoming_stations
                             if s['location_km'] > self.position_km]
-            stations_ahead.sort(key=lambda s: s['location_km'])
 
             # Proactive charging decision
             if self.state == VehicleState.CRUISING and stations_ahead:
