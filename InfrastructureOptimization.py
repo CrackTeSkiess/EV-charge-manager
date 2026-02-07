@@ -332,7 +332,7 @@ def demo_optimization():
     # Grid search over chargers and waiting spots
     optimizer.run_grid_search(
         charger_range=range(2, 16, 2),
-        waiting_spots_range=range(2, 40, 4),
+        waiting_spots_range=range(2, 80, 4),
         verbose=True
     )
 

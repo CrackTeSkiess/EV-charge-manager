@@ -223,6 +223,12 @@ class ChargingArea:
         }
         
         self.current_time: Optional[datetime] = None
+
+        # Cached available chargers (invalidated on status change)
+        self._available_chargers_cache: Optional[List[Charger]] = None
+
+        # Dirty flag for queue cleanup (set when abandon marks entries)
+        self._queue_dirty = False
     
     def _initialize_chargers(
         self, 
@@ -399,7 +405,8 @@ class ChargingArea:
         
         # Mark as abandoned (can't easily remove from heap, filter later)
         entry.patience_score = -1.0  # Marker for abandonment
-        
+        self._queue_dirty = True
+
         del self.queue_map[vehicle_id]
         self.waiting_occupied -= 1
         
@@ -446,7 +453,8 @@ class ChargingArea:
             current_time=self.current_time, # pyright: ignore[reportArgumentType]
             vehicle_soc=vehicle_soc
         )
-        
+        self._invalidate_charger_cache()
+
         self.served_count += 1
         
         return {
@@ -502,6 +510,7 @@ class ChargingArea:
                 # Check completion based on requested energy
                 if charger.current_session and charger.current_session.delivered_energy_kwh >= charger.current_session.requested_energy_kwh:
                     completed = charger.complete_session()
+                    self._invalidate_charger_cache()
                     if completed:
                         events['completed_sessions'].append({
                             'vehicle_id': completed.vehicle_id,
@@ -584,6 +593,9 @@ class ChargingArea:
     
     def _clean_queue(self) -> int:
         """Remove abandoned entries marked with patience_score < 0."""
+        if not self._queue_dirty:
+            return 0
+
         cleaned = 0
         new_queue = []
         for entry in self.queue:
@@ -600,6 +612,7 @@ class ChargingArea:
 
         self.queue = new_queue
         heapq.heapify(self.queue)  # Re-heapify
+        self._queue_dirty = False
         return cleaned
     
     def _get_next_valid_entry(self) -> Optional[QueueEntry]:
@@ -619,8 +632,14 @@ class ChargingArea:
     # =========================================================================
     
     def get_available_chargers(self) -> List[Charger]:
-        """Return list of currently available chargers."""
-        return [c for c in self.chargers if c.is_available()]
+        """Return list of currently available chargers (cached)."""
+        if self._available_chargers_cache is None:
+            self._available_chargers_cache = [c for c in self.chargers if c.is_available()]
+        return self._available_chargers_cache
+
+    def _invalidate_charger_cache(self) -> None:
+        """Invalidate cached available chargers list."""
+        self._available_chargers_cache = None
     
     def get_utilization_rate(self) -> float:
         """Calculate current utilization (0.0 to 1.0)."""

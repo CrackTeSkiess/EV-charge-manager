@@ -66,6 +66,7 @@ class Highway:
         # Charging infrastructure
         self.charging_areas: Dict[str, ChargingArea] = {}
         self.station_positions: Dict[float, str] = {}  # km -> area_id
+        self._sorted_stations: List[float] = []  # cached sorted station positions
         self._register_charging_areas(charging_areas or [])
 
         # Road segmentation (for variable speed limits, etc.)
@@ -131,6 +132,7 @@ class Highway:
 
             self.charging_areas[area.id] = area
             self.station_positions[area.location_km] = area.id
+        self._sorted_stations = sorted(self.station_positions.keys())
 
     def _create_default_segments(self) -> List[HighwaySegment]:
         """Create default uniform segmentation."""
@@ -286,7 +288,7 @@ class Highway:
             return None
 
         # Get sorted list of station positions
-        sorted_stations = sorted(self.station_positions.keys())
+        sorted_stations = self._sorted_stations
 
         # Find if at station location (within detection threshold)
         # INCREASED from 0.5 km to 3.0 km to prevent vehicles from jumping over
@@ -339,7 +341,7 @@ class Highway:
         area = self.charging_areas[area_id]
 
         # Check if this is a must-stop situation
-        sorted_stations = sorted(self.station_positions.keys())
+        sorted_stations = self._sorted_stations
         current_station_km = area.location_km
         next_station_km = None
         for station_km in sorted_stations:
@@ -378,7 +380,7 @@ class Highway:
                 # Start session (simplified - would get energy need from vehicle)
                 # Calculate energy needed - SAFETY FIRST
                 # Must have enough to reach next station or highway end
-                sorted_stations = sorted(self.station_positions.keys())
+                sorted_stations = self._sorted_stations
                 current_station_km = area.location_km
                 next_station_km = None
                 for station_km in sorted_stations:
@@ -548,7 +550,7 @@ class Highway:
         events = []
 
         # Get sorted station positions for next-station lookups
-        sorted_stations = sorted(self.station_positions.keys())
+        sorted_stations = self._sorted_stations
 
         for vehicle_id, (area_id, entry_time) in list(self.vehicles_in_queue.items()):
             vehicle = self.vehicles.get(vehicle_id)
@@ -722,7 +724,7 @@ class Highway:
         events = []
         
         # Get sorted station positions for next-station lookups
-        sorted_stations = sorted(self.station_positions.keys())
+        sorted_stations = self._sorted_stations
 
         for vehicle_id, area_id in list(self.vehicles_at_station.items()):
             vehicle = self.vehicles.get(vehicle_id)
@@ -815,6 +817,7 @@ class Highway:
                 if reached_target_soc and can_exit_safely:
                     # Complete charging - safe to exit
                     completed = charger.complete_session()
+                    area._invalidate_charger_cache()
                     duration_min = (timestamp - session.start_time).total_seconds() / 60
 
                     vehicle.finish_charging(timestamp, duration_min)
@@ -907,32 +910,27 @@ class Highway:
 
         # 4. Update driving vehicles
         vehicles_to_remove = []
-        
-        # FIRST: Check for vehicles that passed stations without stopping
-        # This catches vehicles that might have "jumped over" the detection zone
+
         for vehicle_id, vehicle in list(self.vehicles.items()):
+            # Skip if at station
             if vehicle_id in self.vehicles_at_station or \
                vehicle_id in self.vehicles_in_queue:
                 continue
-                
-            # Check if vehicle just passed a station (within last step)
+
+            # Check if vehicle just passed a station without stopping
+            forced_handoff = False
             for station_km, area_id in self.station_positions.items():
-                # Vehicle is just past station (within 2 km behind)
                 if 0 < vehicle.position_km - station_km <= 2.0:
-                    # Check if this is a must-stop situation
-                    sorted_stations = sorted(self.station_positions.keys())
                     next_station_km = None
-                    for sk in sorted_stations:
+                    for sk in self._sorted_stations:
                         if sk > station_km + 0.5:
                             next_station_km = sk
                             break
-                    
-                    # If must stop but didn't, force them back!
                     if vehicle.must_stop_at_station(station_km, next_station_km, self.length_km):
-                        self._log_highway_event("MISSED_STATION", 
+                        self._log_highway_event("MISSED_STATION",
                                                f"Forced back to station at km {station_km}",
                                                vehicle_id)
-                        vehicle.position_km = station_km  # Move back to station
+                        vehicle.position_km = station_km
                         vehicle.set_state(VehicleState.APPROACHING, timestamp, f"forced stop at {area_id}")
                         handoff_result = self._handoff_to_station(vehicle_id, area_id, timestamp)
                         step_events['handoffs'].append({
@@ -941,12 +939,9 @@ class Highway:
                             'result': handoff_result,
                             'forced': True
                         })
-                        break  # Only handle one station per vehicle
-
-        for vehicle_id, vehicle in list(self.vehicles.items()):
-            # Skip if at station
-            if vehicle_id in self.vehicles_at_station or \
-               vehicle_id in self.vehicles_in_queue:
+                        forced_handoff = True
+                        break
+            if forced_handoff:
                 continue
 
             # Get environment for this vehicle
