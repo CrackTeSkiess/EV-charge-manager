@@ -12,6 +12,10 @@ from Simulation import Simulation, SimulationParameters, EarlyStopCondition
 from VehicleGenerator import TemporalDistribution
 from VisualizationTool import VisualizationTool
 from StationDataCollector import StationDataCollector
+from EnergyManager import (
+    EnergyManagerConfig, GridSourceConfig, SolarSourceConfig,
+    WindSourceConfig, BatteryStorageConfig
+)
 
 
 def parse_args():
@@ -90,6 +94,24 @@ def parse_args():
         help="Disable emergency queue overflow (vehicles rejected even if they can't reach next station)"
     )
 
+    # Energy management
+    parser.add_argument(
+        "--energy-grid-max-kw", type=float, default=None,
+        help="Grid power limit per station in kW (default: unlimited/disabled)"
+    )
+    parser.add_argument(
+        "--energy-solar-peak-kw", type=float, default=None,
+        help="Solar panel peak power per station in kW (default: disabled)"
+    )
+    parser.add_argument(
+        "--energy-wind-base-kw", type=float, default=None,
+        help="Wind turbine base power per station in kW (default: disabled)"
+    )
+    parser.add_argument(
+        "--energy-battery-kwh", type=float, default=None,
+        help="Battery storage capacity per station in kWh (default: disabled)"
+    )
+
     return parser.parse_args()
 
 
@@ -99,6 +121,27 @@ def main():
 
     # Map traffic pattern string to enum
     traffic_pattern = TemporalDistribution[args.traffic_pattern]
+
+    # Build energy manager configs if any energy source is specified
+    energy_configs = None
+    has_energy = any([
+        args.energy_grid_max_kw, args.energy_solar_peak_kw,
+        args.energy_wind_base_kw, args.energy_battery_kwh
+    ])
+    if has_energy:
+        source_configs = []
+        if args.energy_grid_max_kw is not None:
+            source_configs.append(GridSourceConfig(max_power_kw=args.energy_grid_max_kw))
+        if args.energy_solar_peak_kw is not None:
+            source_configs.append(SolarSourceConfig(peak_power_kw=args.energy_solar_peak_kw))
+        if args.energy_wind_base_kw is not None:
+            source_configs.append(WindSourceConfig(base_power_kw=args.energy_wind_base_kw))
+        if args.energy_battery_kwh is not None:
+            source_configs.append(BatteryStorageConfig(capacity_kwh=args.energy_battery_kwh))
+
+        # Same config for every station
+        single_config = EnergyManagerConfig(source_configs=source_configs)
+        energy_configs = [single_config] * args.num_stations
 
     # Create simulation parameters
     params = SimulationParameters(
@@ -113,7 +156,8 @@ def main():
         enable_station_tracking=args.enable_station_tracker,
         enable_vehicle_tracking=args.enable_vehicle_tracker,
         allow_queue_overflow=not args.no_queue_overflow,
-        early_stop=EarlyStopCondition.disabled()
+        early_stop=EarlyStopCondition.disabled(),
+        energy_manager_configs=energy_configs
     )
 
     # Create and run simulation
@@ -125,6 +169,17 @@ def main():
     print(f"Duration: {args.duration} hours")
     if args.seed:
         print(f"Random seed: {args.seed}")
+    if has_energy:
+        sources = []
+        if args.energy_grid_max_kw is not None:
+            sources.append(f"Grid({args.energy_grid_max_kw}kW)")
+        if args.energy_solar_peak_kw is not None:
+            sources.append(f"Solar({args.energy_solar_peak_kw}kW peak)")
+        if args.energy_wind_base_kw is not None:
+            sources.append(f"Wind({args.energy_wind_base_kw}kW base)")
+        if args.energy_battery_kwh is not None:
+            sources.append(f"Battery({args.energy_battery_kwh}kWh)")
+        print(f"Energy: {' + '.join(sources)} per station")
     print("=" * 70)
     print()
 

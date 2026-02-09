@@ -23,6 +23,8 @@ class StationSnapshot:
     queue_length: int  # Number of vehicles waiting
     total_chargers: int
     waiting_spots: int
+    chargers_unpowered: int = 0  # Chargers without energy supply
+    energy_available_kw: float = 0.0  # Total available power from energy manager
 
 
 class StationDataCollector:
@@ -57,12 +59,19 @@ class StationDataCollector:
         area_id = charging_area.id
         
         # Count occupied chargers
-        occupied = sum(1 for c in charging_area.chargers 
+        occupied = sum(1 for c in charging_area.chargers
                       if c.status.name == 'OCCUPIED')
-        
+
         # Count queue length (only valid entries)
         queue_len = sum(1 for e in charging_area.queue if e.patience_score >= 0)
-        
+
+        # Energy management data
+        unpowered = sum(1 for c in charging_area.chargers
+                       if c.status.name == 'UNPOWERED')
+        energy_available = 0.0
+        if hasattr(charging_area, 'energy_manager') and charging_area.energy_manager and not charging_area.energy_manager.is_unlimited:
+            energy_available = charging_area.energy_manager.total_available_kw
+
         snapshot = StationSnapshot(
             timestamp=timestamp,
             station_id=area_id,
@@ -70,7 +79,9 @@ class StationDataCollector:
             occupancy=occupied,
             queue_length=queue_len,
             total_chargers=len(charging_area.chargers),
-            waiting_spots=charging_area.waiting_spots
+            waiting_spots=charging_area.waiting_spots,
+            chargers_unpowered=unpowered,
+            energy_available_kw=energy_available
         )
         
         self.snapshots[area_id].append(snapshot)
@@ -107,7 +118,9 @@ class StationDataCollector:
                 'occupancy': [s.occupancy for s in snapshots],
                 'queue_length': [s.queue_length for s in snapshots],
                 'total_chargers': [s.total_chargers for s in snapshots],
-                'waiting_spots': [s.waiting_spots for s in snapshots]
+                'waiting_spots': [s.waiting_spots for s in snapshots],
+                'chargers_unpowered': [s.chargers_unpowered for s in snapshots],
+                'energy_available_kw': [s.energy_available_kw for s in snapshots]
             }
             
             df = pd.DataFrame(data)

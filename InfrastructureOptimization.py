@@ -324,14 +324,14 @@ def demo_optimization():
     optimizer = InfrastructureOptimizer(
         highway_length_km=200.0,
         num_stations=4,
-        vehicles_per_hour=60.0,
+        vehicles_per_hour=50.0,
         simulation_duration_hours=10.0,
         random_seed=42
     )
 
     # Grid search over chargers and waiting spots
     optimizer.run_grid_search(
-        charger_range=range(2, 16, 2),
+        charger_range=range(2, 16, 1),
         waiting_spots_range=range(2, 80, 4),
         verbose=True
     )

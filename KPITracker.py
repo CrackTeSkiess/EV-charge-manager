@@ -102,6 +102,13 @@ class KPIRecord:
     service_level: float  # % of vehicles served without excessive wait
     customer_satisfaction_score: float  # Composite metric
 
+    # Energy Management KPIs (0/None when no energy management configured)
+    energy_available_kw: float = 0.0
+    energy_demand_kw: float = 0.0
+    energy_curtailment_kw: float = 0.0
+    chargers_unpowered: int = 0
+    vehicles_requeued_energy: int = 0
+
 
 class KPITracker:
     """
@@ -320,6 +327,23 @@ class KPITracker:
             (1 - min(1, critical_battery / 5)) * 0.1
         )
 
+        # Energy management KPIs
+        energy_available_kw = 0.0
+        energy_demand_kw = 0.0
+        energy_curtailment_kw = 0.0
+        chargers_unpowered = 0
+        vehicles_requeued_energy = 0
+
+        for area in highway.charging_areas.values():
+            if hasattr(area, 'energy_manager') and area.energy_manager and not area.energy_manager.is_unlimited:
+                state = area.energy_manager.get_state()
+                energy_available_kw += state['total_available_kw']
+                energy_demand_kw += state['total_demand_kw']
+                energy_curtailment_kw += state['curtailment_kw']
+            chargers_unpowered += sum(
+                1 for c in area.chargers if c.status.name == 'UNPOWERED'
+            )
+
         # Create record
         record = KPIRecord(
             step=step,
@@ -353,7 +377,12 @@ class KPITracker:
             abandonment_rate=abandonment_rate,
             estimated_revenue=estimated_revenue,
             service_level=service_level,
-            customer_satisfaction_score=satisfaction  # pyright: ignore[reportArgumentType]
+            customer_satisfaction_score=satisfaction,  # pyright: ignore[reportArgumentType]
+            energy_available_kw=energy_available_kw,
+            energy_demand_kw=energy_demand_kw,
+            energy_curtailment_kw=energy_curtailment_kw,
+            chargers_unpowered=chargers_unpowered,
+            vehicles_requeued_energy=vehicles_requeued_energy
         )
 
         # Store and update

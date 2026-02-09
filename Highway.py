@@ -1021,7 +1021,24 @@ class Highway:
 
         # 1. Update all charging areas
         for area in self.charging_areas.values():
-            area.step(timestamp, time_step_minutes)
+            area_events = area.step(timestamp, time_step_minutes)
+
+            # Handle energy curtailment requeues: vehicles interrupted by power loss
+            for vid in area_events.get('energy_events', {}).get('requeued', []):
+                if vid in self.vehicles_at_station:
+                    del self.vehicles_at_station[vid]
+                    self.vehicles_in_queue[vid] = (area.id, timestamp)
+                    vehicle = self.vehicles.get(vid)
+                    if vehicle:
+                        vehicle.set_state(
+                            VehicleState.QUEUED, timestamp,
+                            "energy curtailment requeue"
+                        )
+                        if self.tracker:
+                            self.tracker.transition_to_queued(
+                                vid, timestamp, area.id,
+                                "energy curtailment"
+                            )
 
         # 2. Update queued vehicles
         queue_events = self._update_queued_vehicles(timestamp)

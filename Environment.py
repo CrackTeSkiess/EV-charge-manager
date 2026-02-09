@@ -15,6 +15,7 @@ from collections import deque
 from Highway import Highway, HighwaySegment
 from Vehicle import Vehicle, VehicleState, DriverBehavior
 from ChargingArea import ChargingArea, ChargerType
+from EnergyManager import EnergyManager, EnergyManagerConfig
 
 if TYPE_CHECKING:
     from VehicleTracker import VehicleTracker
@@ -54,9 +55,14 @@ class SimulationConfig:
         default_factory=lambda: datetime(2024, 1, 15, 8, 0)
     )
     time_step_minutes: float = 1.0
+    
+    simulation_duration_hours: float = 4.0  # Total simulation time (for termination condition)
 
     # Random seed
     random_seed: Optional[int] = None
+
+    # Energy management (optional — None means unlimited power for all areas)
+    energy_manager_configs: Optional[List[EnergyManagerConfig]] = None
 
     # Vehicle history tracking (per-vehicle detailed/state/position history)
     track_vehicle_history: bool = False
@@ -190,6 +196,14 @@ class Environment:
                 waiting_spots=self.config.waiting_spots_per_area
             )
             charging_areas.append(area)
+
+        # Attach energy managers if configured
+        if self.config.energy_manager_configs:
+            configs = self.config.energy_manager_configs
+            for i, area in enumerate(charging_areas):
+                if i < len(configs) and configs[i] is not None:
+                    manager = EnergyManager(configs[i])
+                    area.set_energy_manager(manager)
 
         # Create highway with tracker if available
         highway = Highway(

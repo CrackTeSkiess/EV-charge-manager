@@ -8,10 +8,13 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Optional, List, Dict, Callable
+from typing import Optional, List, Dict, Callable, TYPE_CHECKING
 from collections import deque
 import heapq
 from datetime import datetime, timedelta
+
+if TYPE_CHECKING:
+    from EnergyManager import EnergyManager
 
 
 class ChargerStatus(Enum):
@@ -19,6 +22,7 @@ class ChargerStatus(Enum):
     OCCUPIED = auto()
     MAINTENANCE = auto()
     RESERVED = auto()
+    UNPOWERED = auto()  # No energy supply from EnergyManager
 
 
 class ChargerType(Enum):
@@ -107,25 +111,6 @@ class Charger:
         
         return None    
     
-    '''
-    def update_session(self, time_elapsed_minutes: float) -> Optional[ChargingSession]:
-        """Update session progress. Returns completed session if finished."""
-        if self.current_session is None:
-            return None
-        
-        # Calculate energy delivered in this time step
-        efficiency = self.efficiency_curve(0.5)  # Simplified - would track actual SOC
-        energy_delivered = (self.power_kw * efficiency) * (time_elapsed_minutes / 60)
-        
-        self.current_session.delivered_energy_kwh += energy_delivered
-        
-        # Check completion
-        if self.current_session.delivered_energy_kwh >= self.current_session.requested_energy_kwh:
-            return self.complete_session()
-        
-        return None
-    '''
-    
     def complete_session(self) -> ChargingSession:
         """Complete current session and free charger."""
         if self.current_session is None:
@@ -190,11 +175,13 @@ class ChargingArea:
         charger_power_config: Optional[Dict[ChargerType, int]] = None,
         waiting_spots: int = 6,
         location_km: float = 0.0,
-        name: str = "Charging Area"
+        name: str = "Charging Area",
+        energy_manager: Optional[EnergyManager] = None
     ):
         self.id = area_id or str(uuid.uuid4())[:8]
         self.name = name
         self.location_km = location_km
+        self.energy_manager = energy_manager
         
         # Tunable: Waiting area capacity
         self.waiting_spots = waiting_spots
@@ -224,11 +211,16 @@ class ChargingArea:
         
         self.current_time: Optional[datetime] = None
 
+        # Energy management (optional — None means unlimited power)
+        self.energy_manager: Optional[EnergyManager] = None
+
         # Cached available chargers (invalidated on status change)
         self._available_chargers_cache: Optional[List[Charger]] = None
 
         # Dirty flag for queue cleanup (set when abandon marks entries)
         self._queue_dirty = False
+        
+        self.rl_targets: Optional[Dict] = None
     
     def _initialize_chargers(
         self, 
@@ -287,7 +279,8 @@ class ChargingArea:
             'estimated_wait_minutes': self.estimate_wait_time(),
             'next_availability': self.estimate_next_availability(),
             'is_full': self.is_full(),
-            'current_utilization': self.get_utilization_rate()
+            'current_utilization': self.get_utilization_rate(),
+            'chargers_unpowered': sum(1 for c in self.chargers if c.status == ChargerStatus.UNPOWERED)
         }
     
     def estimate_next_availability(self) -> Optional[datetime]:
@@ -474,20 +467,136 @@ class ChargingArea:
         # Simple selection: fastest available
         # In full version: match power_preference from queue entry
         return max(available, key=lambda c: c.power_kw)
-    
+
+    # =========================================================================
+    # ENERGY MANAGEMENT
+    # =========================================================================
+
+    def set_energy_manager(self, energy_manager: EnergyManager) -> None:
+        """Attach an energy manager to this charging area."""
+        self.energy_manager = energy_manager
+
+    def _requeue_vehicle(self, vehicle_id: str) -> None:
+        """Re-add a vehicle to the queue after energy curtailment (high priority)."""
+        entry = QueueEntry(
+            priority=0.0,  # Highest priority — was already being served
+            entry_time=self.current_time or datetime.now(),
+            vehicle_id=vehicle_id,
+            queue_position=0
+        )
+        heapq.heappush(self.queue, entry)
+        self.queue_map[vehicle_id] = entry
+        self.waiting_occupied += 1
+
+    def _apply_energy_constraints(self, timestamp: datetime, time_step_minutes: float) -> Dict:
+        """
+        Apply energy constraints: determine which chargers get power.
+        Called at the start of each step, before session updates.
+
+        Returns dict of events (powered_down, powered_up, requeued).
+        """
+        if self.energy_manager is None or self.energy_manager.is_unlimited:
+            # Power up any previously unpowered chargers (in case manager was removed)
+            for charger in self.chargers:
+                if charger.status == ChargerStatus.UNPOWERED:
+                    charger.status = ChargerStatus.AVAILABLE
+                    self._invalidate_charger_cache()
+            return {'powered_down': [], 'powered_up': [], 'requeued': []}
+
+        events: Dict[str, list] = {'powered_down': [], 'powered_up': [], 'requeued': []}
+
+        # 1. Update energy sources
+        self.energy_manager.step(timestamp, time_step_minutes)
+
+        # 2. Calculate total demand: all chargers we want to keep powered
+        #    (occupied + available + currently unpowered that could be restored)
+        all_serviceable = [
+            c for c in self.chargers
+            if c.status in (ChargerStatus.OCCUPIED, ChargerStatus.AVAILABLE, ChargerStatus.UNPOWERED)
+        ]
+        total_demand_kw = sum(c.power_kw for c in all_serviceable)
+
+        # 3. Request energy from manager
+        available_kw = self.energy_manager.request_energy(total_demand_kw, time_step_minutes)
+
+        # 4. Allocate power: prioritize OCCUPIED chargers (most-complete first),
+        #    then AVAILABLE chargers, powering down the rest.
+        occupied_chargers = [c for c in self.chargers if c.status == ChargerStatus.OCCUPIED]
+        sorted_occupied = sorted(
+            occupied_chargers,
+            key=lambda c: c.current_session.completion_percentage() if c.current_session else 0,
+            reverse=True
+        )
+
+        budget_kw = available_kw
+
+        # 4a. Allocate to occupied chargers (keep most-complete running)
+        for charger in sorted_occupied:
+            if budget_kw >= charger.power_kw:
+                budget_kw -= charger.power_kw
+            else:
+                # Power down this charger — not enough energy
+                vehicle_id = None
+                if charger.current_session:
+                    vehicle_id = charger.current_session.vehicle_id
+                    charger.interrupt_session(reason="energy_curtailment")
+                    self._requeue_vehicle(vehicle_id)
+                    events['requeued'].append(vehicle_id)
+                charger.status = ChargerStatus.UNPOWERED
+                self._invalidate_charger_cache()
+                events['powered_down'].append({
+                    'charger_id': charger.id,
+                    'vehicle_id': vehicle_id,
+                    'reason': 'energy_curtailment'
+                })
+
+        # 4b. Allocate remaining budget to AVAILABLE chargers
+        for charger in self.chargers:
+            if charger.status == ChargerStatus.AVAILABLE:
+                if budget_kw >= charger.power_kw:
+                    budget_kw -= charger.power_kw
+                else:
+                    charger.status = ChargerStatus.UNPOWERED
+                    self._invalidate_charger_cache()
+
+        # 5. Power up previously UNPOWERED chargers if budget remains
+        for charger in self.chargers:
+            if charger.status == ChargerStatus.UNPOWERED:
+                if budget_kw >= charger.power_kw:
+                    charger.status = ChargerStatus.AVAILABLE
+                    budget_kw -= charger.power_kw
+                    events['powered_up'].append({'charger_id': charger.id})
+                    self._invalidate_charger_cache()
+
+        return events
+
+    # =========================================================================
+    # SIMULATION STEP
+    # =========================================================================
+
     def step(self, current_time: datetime, time_step_minutes: float = 1.0) -> Dict:
         """
         Advance simulation by one time step.
-        
+
         Returns summary of events this step.
         """
         self.current_time = current_time
         events = {
             'completed_sessions': [],
             'new_assignments': [],
-            'abandonments_cleaned': 0
+            'abandonments_cleaned': 0,
+            'energy_events': {}
         }
         
+        if hasattr(self, 'rl_targets') and self.rl_targets:
+            # Override default energy dispatch with RL targets
+            # This would modify how _manage_energy operates
+            pass
+
+        # Apply energy constraints FIRST (before session updates)
+        energy_events = self._apply_energy_constraints(current_time, time_step_minutes)
+        events['energy_events'] = energy_events
+
         # Update all active charging sessions AND vehicle batteries
         for charger in self.chargers:
             if charger.status == ChargerStatus.OCCUPIED:
@@ -542,55 +651,6 @@ class ChargingArea:
         
         return events    
     
-    '''
-    def step(self, current_time: datetime, time_step_minutes: float = 1.0) -> Dict:
-        """
-        Advance simulation by one time step.
-        
-        Returns summary of events this step.
-        """
-        self.current_time = current_time
-        events = {
-            'completed_sessions': [],
-            'new_assignments': [],
-            'abandonments_cleaned': 0
-        }
-        # Update all active charging sessions
-        for charger in self.chargers:
-            if charger.status == ChargerStatus.OCCUPIED:
-                completed = charger.update_session(time_step_minutes)
-                if completed:
-                    events['completed_sessions'].append({
-                        'vehicle_id': completed.vehicle_id,
-                        'energy_delivered': completed.delivered_energy_kwh,
-                        'duration_min': (current_time - completed.start_time).total_seconds() / 60
-                    })
-                    self.stats['completed_sessions'] += 1
-        
-        # Clean abandoned entries from queue and assign new vehicles
-        self._clean_queue()
-        
-        # Assign available chargers to queue
-        while self.get_available_chargers() and self.queue:
-            # Get highest priority valid entry
-            next_entry = self._get_next_valid_entry()
-            if not next_entry:
-                break
-            
-            result = self.start_charging(
-                next_entry.vehicle_id,
-                energy_needed_kwh=50.0,  # Would come from vehicle profile
-                vehicle_soc=0.2
-            )
-            if result:
-                events['new_assignments'].append({
-                    'vehicle_id': next_entry.vehicle_id,
-                    'charger_id': result['charger_id']
-                })
-        
-        return events
-    '''
-    
     def _clean_queue(self) -> int:
         """Remove abandoned entries marked with patience_score < 0."""
         if not self._queue_dirty:
@@ -642,9 +702,10 @@ class ChargingArea:
         self._available_chargers_cache = None
     
     def get_utilization_rate(self) -> float:
-        """Calculate current utilization (0.0 to 1.0)."""
-        occupied = sum(1 for c in self.chargers if c.status == ChargerStatus.OCCUPIED)
-        return occupied / len(self.chargers) if self.chargers else 0.0
+        """Calculate current utilization (0.0 to 1.0). Excludes UNPOWERED chargers."""
+        powered_chargers = [c for c in self.chargers if c.status != ChargerStatus.UNPOWERED]
+        occupied = sum(1 for c in powered_chargers if c.status == ChargerStatus.OCCUPIED)
+        return occupied / len(powered_chargers) if powered_chargers else 0.0
     
     def is_full(self) -> bool:
         """Check if waiting area is at capacity."""

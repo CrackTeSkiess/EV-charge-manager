@@ -27,6 +27,7 @@ from VehicleTracker import VehicleTracker
 from KPITracker import KPITracker, KPIRecord
 from VisualizationTool import VisualizationTool, ChartConfig
 from StationDataCollector import StationDataCollector
+from EnergyManager import EnergyManagerConfig
 
 
 class StopReason(Enum):
@@ -299,6 +300,10 @@ class SimulationParameters:
     # Queue overflow (allow vehicles to join full queues in emergencies)
     allow_queue_overflow: bool = True
 
+    # Energy management (optional — None means unlimited power for all areas)
+    # If provided, list length must match num_charging_areas (one config per area)
+    energy_manager_configs: Optional[List[EnergyManagerConfig]] = None
+
     def to_dict(self) -> Dict:
         """Convert to dictionary (for serialization)."""
         d = asdict(self)
@@ -447,7 +452,8 @@ class Simulation:
             time_step_minutes=self.params.time_step_minutes,
             random_seed=self.params.random_seed,
             track_vehicle_history=self.params.enable_vehicle_tracking,
-            allow_queue_overflow=self.params.allow_queue_overflow
+            allow_queue_overflow=self.params.allow_queue_overflow,
+            energy_manager_configs=self.params.energy_manager_configs
         )
 
         # Create environment with tracker
@@ -597,6 +603,26 @@ class Simulation:
 
         return self.result
     
+    def run_optimization(self, 
+                        n_trials: int = 100,
+                        use_rl: bool = True) -> Dict:
+        """
+        Run full two-stage optimization
+        """
+        from optuna_optimizer import OptunaOptimizer
+        from optimization_config import OptunaConfig
+        
+        # Create optimizer
+        opt_config = OptunaConfig(n_trials=n_trials)
+        optimizer = OptunaOptimizer(self.params, opt_config) # pyright: ignore[reportArgumentType]
+        
+        # Run optimization
+        pareto_front = optimizer.optimize()
+        
+        return {
+            'pareto_solutions': pareto_front,
+            'study': optimizer.study
+        }    
 
     def _execute_step(self) -> Tuple[bool, Optional[StopReason], str]:
         """
