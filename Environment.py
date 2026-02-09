@@ -202,7 +202,7 @@ class Environment:
             configs = self.config.energy_manager_configs
             for i, area in enumerate(charging_areas):
                 if i < len(configs) and configs[i] is not None:
-                    manager = EnergyManager(configs[i])
+                    manager = EnergyManager(config=configs[i])
                     area.set_energy_manager(manager)
 
         # Create highway with tracker if available
@@ -215,6 +215,12 @@ class Environment:
         )
 
         return highway
+    
+    def setHighway(self, highway: Highway) -> None:
+        """Set the highway instance (for external construction)."""
+        self.highway = highway
+        if self.tracker:
+            self.highway.set_tracker(self.tracker)
 
     # ========================================================================
     # VEHICLE LIFECYCLE MANAGEMENT

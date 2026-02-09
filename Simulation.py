@@ -22,6 +22,7 @@ import pandas as pd
 import numpy as np
 
 from Environment import Environment, SimulationConfig
+from Highway import Highway
 from VehicleGenerator import VehicleGenerator, GeneratorConfig, TemporalDistribution
 from VehicleTracker import VehicleTracker
 from KPITracker import KPITracker, KPIRecord
@@ -384,9 +385,10 @@ class Simulation:
     - Manage simulation state and logging
     """
 
-    def __init__(self, parameters: Optional[SimulationParameters] = None):
+    def __init__(self, parameters: Optional[SimulationParameters] = None, highway: Optional[Highway] = None):
         self.params = parameters or SimulationParameters()
         self.id = str(uuid.uuid4())[:8]
+        self.highway = highway
 
         # Components (initialized in run())
         self.vehicle_tracker: Optional[VehicleTracker] = None
@@ -463,6 +465,9 @@ class Simulation:
         # Ensure highway also has the tracker (should be set via Environment constructor)
         if self.environment.highway.tracker is None:
             self.environment.highway.set_tracker(self.vehicle_tracker)
+            
+        if self.highway:
+            self.environment.setHighway(self.highway)
 
         # Create vehicle generator
         gen_config = GeneratorConfig(
@@ -601,28 +606,7 @@ class Simulation:
         if self.on_stop:
             self.on_stop(self.stop_reason, self.stop_message)  # pyright: ignore[reportArgumentType]
 
-        return self.result
-    
-    def run_optimization(self, 
-                        n_trials: int = 100,
-                        use_rl: bool = True) -> Dict:
-        """
-        Run full two-stage optimization
-        """
-        from optuna_optimizer import OptunaOptimizer
-        from optimization_config import OptunaConfig
-        
-        # Create optimizer
-        opt_config = OptunaConfig(n_trials=n_trials)
-        optimizer = OptunaOptimizer(self.params, opt_config) # pyright: ignore[reportArgumentType]
-        
-        # Run optimization
-        pareto_front = optimizer.optimize()
-        
-        return {
-            'pareto_solutions': pareto_front,
-            'study': optimizer.study
-        }    
+        return self.result  
 
     def _execute_step(self) -> Tuple[bool, Optional[StopReason], str]:
         """

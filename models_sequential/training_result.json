@@ -1,0 +1,34 @@
+{
+  "mode": "sequential",
+  "micro_episodes": 500,
+  "macro_episodes": 300,
+  "micro_final_reward": -262.49583574313874,
+  "macro_final_reward": -1.0591302498442263,
+  "best_config": {
+    "positions": "[ 75.35870489 148.22141126 226.86471567]",
+    "configs": [
+      "EnergyManagerConfig(source_configs=[GridSourceConfig(source_type='grid', max_power_kw=387.629638671875), SolarSourceConfig(source_type='solar', peak_power_kw=255.73036193847656, sunrise_hour=6.0, sunset_hour=20.0, peak_hour=13.0), WindSourceConfig(source_type='wind', base_power_kw=355.0620422363281, min_power_kw=10.0, max_power_kw=100.0, variability=0.3), BatteryStorageConfig(source_type='battery', capacity_kwh=294.00909423828125, max_charge_rate_kw=126.30297088623047, max_discharge_rate_kw=126.30297088623047, initial_soc=0.5, min_soc=0.1, max_soc=0.95, round_trip_efficiency=0.9)])",
+      "EnergyManagerConfig(source_configs=[GridSourceConfig(source_type='grid', max_power_kw=356.1819763183594), SolarSourceConfig(source_type='solar', peak_power_kw=303.4454650878906, sunrise_hour=6.0, sunset_hour=20.0, peak_hour=13.0), WindSourceConfig(source_type='wind', base_power_kw=170.77169799804688, min_power_kw=10.0, max_power_kw=100.0, variability=0.3), BatteryStorageConfig(source_type='battery', capacity_kwh=113.6506576538086, max_charge_rate_kw=151.2780303955078, max_discharge_rate_kw=151.2780303955078, initial_soc=0.5, min_soc=0.1, max_soc=0.95, round_trip_efficiency=0.9)])",
+      "EnergyManagerConfig(source_configs=[GridSourceConfig(source_type='grid', max_power_kw=799.0199584960938), SolarSourceConfig(source_type='solar', peak_power_kw=285.9728698730469, sunrise_hour=6.0, sunset_hour=20.0, peak_hour=13.0), WindSourceConfig(source_type='wind', base_power_kw=203.87892150878906, min_power_kw=10.0, max_power_kw=100.0, variability=0.3), BatteryStorageConfig(source_type='battery', capacity_kwh=110.46378326416016, max_charge_rate_kw=96.60221862792969, max_discharge_rate_kw=96.60221862792969, initial_soc=0.5, min_soc=0.1, max_soc=0.95, round_trip_efficiency=0.9)])"
+    ],
+    "managers": [
+      "<HierarchicalEnergyManager.HierarchicalEnergyManager object at 0x000002007A5EDFD0>",
+      "<HierarchicalEnergyManager.HierarchicalEnergyManager object at 0x000002007A5EDF10>",
+      "<HierarchicalEnergyManager.HierarchicalEnergyManager object at 0x000002007A5ED490>"
+    ],
+    "n_chargers": [
+      2,
+      2,
+      2
+    ],
+    "n_waiting": [
+      10,
+      11,
+      12
+    ],
+    "cost": "776.9186",
+    "grid_cost": "689.85693",
+    "arbitrage_profit": "2103.269"
+  },
+  "training_time_seconds": 52.31314706802368
+}

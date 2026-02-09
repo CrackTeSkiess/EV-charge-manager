@@ -515,9 +515,11 @@ class ChargingArea:
             if c.status in (ChargerStatus.OCCUPIED, ChargerStatus.AVAILABLE, ChargerStatus.UNPOWERED)
         ]
         total_demand_kw = sum(c.power_kw for c in all_serviceable)
-
+        
         # 3. Request energy from manager
-        available_kw = self.energy_manager.request_energy(total_demand_kw, time_step_minutes)
+        available_kw = 0.0
+        for c in all_serviceable:
+            available_kw += self.energy_manager.request_energy(c.power_kw, c.id, time_step_minutes)
 
         # 4. Allocate power: prioritize OCCUPIED chargers (most-complete first),
         #    then AVAILABLE chargers, powering down the rest.
