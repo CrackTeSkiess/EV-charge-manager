@@ -438,9 +438,11 @@ class MultiAgentPPO:
             # Periodic evaluation
             do_eval = update_num % max(1, eval_interval // episodes_per_update) == 0
             best_config = None
+            current_config = None
             if do_eval:
                 eval_result = self.evaluate()
                 best_config = eval_result.get('best_config')
+                current_config = eval_result.get('current_config')
 
             # Append one record to the history file
             if history_path:
@@ -463,6 +465,8 @@ class MultiAgentPPO:
                         "grid_cost": float(best_config.get("grid_cost", 0)),
                         "arbitrage_profit": float(best_config.get("arbitrage_profit", 0)),
                     }
+                if current_config is not None:
+                    record["current_config"] = current_config
                 with open(history_path, "a") as fh:
                     fh.write(json.dumps(record) + "\n")
 
@@ -517,11 +521,22 @@ class MultiAgentPPO:
                 print(f"  Station {i+1}: {best['positions'][i]:.1f}km, "
                       f"{best['n_chargers'][i]} chargers, "
                       f"{best['n_waiting'][i]} waiting spots")
-        
+
+        # Capture what the current policy actually produced in the last
+        # eval episode (not the all-time best) so the evolution chart can
+        # show real exploration behaviour.
+        current_config = {
+            'positions': [float(p) for p in self.env.current_positions],
+            'n_chargers': list(getattr(self.env, 'current_n_chargers', [])),
+            'n_waiting': list(getattr(self.env, 'current_n_waiting', [])),
+            'cost': float(eval_costs[-1]) if eval_costs else 0.0,
+        }
+
         return {
             'avg_reward': avg_reward,
             'avg_cost': avg_cost,
             'best_config': best,
+            'current_config': current_config,
         }
     
     def save(self, path: str):

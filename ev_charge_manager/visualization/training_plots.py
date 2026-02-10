@@ -325,10 +325,14 @@ class TrainingVisualizer:
         show_plot: Optional[bool] = None,
     ) -> plt.Figure:
         """
-        Plot how the best infrastructure configuration evolved over training.
+        Plot how infrastructure configuration evolved over training.
 
-        Only uses records that contain a ``best_config`` snapshot (written at
-        each evaluation interval).  Produces a 3-row figure:
+        Plots the **current policy output** (solid lines) to show what the
+        agent is actually exploring, and the **all-time best** (dashed lines)
+        for reference.  Falls back to best_config only if no current_config
+        records are present.
+
+        Produces a 3-row figure:
 
         - **Row 1 — Station positions** (km along highway) vs episode.
           Background bands divide the highway into thirds.
@@ -343,23 +347,42 @@ class TrainingVisualizer:
             Total highway length in km (used for background bands).
         """
         records = self._load_jsonl(history_path)
-        snapshots = [r for r in records if "best_config" in r]
-        if not snapshots:
+
+        # Current-policy snapshots (preferred) and all-time-best snapshots
+        cur_snapshots = [r for r in records if "current_config" in r]
+        best_snapshots = [r for r in records if "best_config" in r]
+
+        if not cur_snapshots and not best_snapshots:
             return self._empty_figure(
-                "No best_config snapshots in training history.\n"
+                "No config snapshots in training history.\n"
                 "(They are written at eval intervals — check eval_interval setting.)"
             )
 
-        episodes = [s["episode"] for s in snapshots]
-        n_stations = len(snapshots[0]["best_config"]["positions"])
+        # Use current_config as primary series when available
+        primary_key = "current_config" if cur_snapshots else "best_config"
+        primary = cur_snapshots if cur_snapshots else best_snapshots
 
-        # Build per-station series
-        positions  = [[s["best_config"]["positions"][i]  for s in snapshots]
+        episodes = [s["episode"] for s in primary]
+        n_stations = len(primary[0][primary_key]["positions"])
+
+        # Build per-station series for the primary (current policy) view
+        positions  = [[s[primary_key]["positions"][i]  for s in primary]
                       for i in range(n_stations)]
-        n_chargers = [[s["best_config"]["n_chargers"][i] for s in snapshots]
+        n_chargers = [[s[primary_key]["n_chargers"][i] for s in primary]
                       for i in range(n_stations)]
-        n_waiting  = [[s["best_config"]["n_waiting"][i]  for s in snapshots]
+        n_waiting  = [[s[primary_key]["n_waiting"][i]  for s in primary]
                       for i in range(n_stations)]
+
+        # Build all-time-best series for dashed reference lines
+        has_best = bool(best_snapshots)
+        if has_best:
+            best_eps = [s["episode"] for s in best_snapshots]
+            best_positions  = [[s["best_config"]["positions"][i]  for s in best_snapshots]
+                               for i in range(n_stations)]
+            best_n_chargers = [[s["best_config"]["n_chargers"][i] for s in best_snapshots]
+                               for i in range(n_stations)]
+            best_n_waiting  = [[s["best_config"]["n_waiting"][i]  for s in best_snapshots]
+                               for i in range(n_stations)]
 
         fig = plt.figure(figsize=(12, 9), layout="constrained")
         gs = gridspec.GridSpec(3, 1, figure=fig, hspace=0.40)
@@ -384,9 +407,18 @@ class TrainingVisualizer:
             ax_chr.plot(episodes,  n_chargers[i], **kw)
             ax_wait.plot(episodes, n_waiting[i],  **kw)
 
+            # Overlay all-time best as thin dashed lines when we have both
+            if has_best and primary_key == "current_config":
+                best_kw = dict(color=color, linewidth=1.0, linestyle="--",
+                               alpha=0.5)
+                ax_pos.plot(best_eps,  best_positions[i],  **best_kw)
+                ax_chr.plot(best_eps,  best_n_chargers[i], **best_kw)
+                ax_wait.plot(best_eps, best_n_waiting[i],  **best_kw)
+
         ax_pos.set_ylabel("Position (km)", fontsize=self.config.label_fontsize)
         ax_pos.set_ylim(0, highway_length)
-        ax_pos.set_title("Infrastructure Configuration Evolution",
+        title_suffix = " (solid=policy, dashed=best)" if has_best and primary_key == "current_config" else ""
+        ax_pos.set_title(f"Infrastructure Configuration Evolution{title_suffix}",
                           fontsize=self.config.title_fontsize, fontweight="bold")
         # Station legend on top, highway bands legend inside
         station_handles, station_labels = ax_pos.get_legend_handles_labels()
