@@ -196,7 +196,7 @@ class MicroRLTrainer:
     
     def _generate_demand(self, hour: int, station_idx: int) -> float:
         """Generate synthetic demand pattern."""
-        base = 200 + station_idx * 50  # Different base per station
+        base = 200 # Different base per station
         
         # Peak hours: 8-9 AM and 5-7 PM
         if 7 <= hour <= 9 or 17 <= hour <= 19:
@@ -211,7 +211,7 @@ class MicroRLTrainer:
     
     def _generate_solar(self, hour: int, station_idx: int) -> float:
         """Generate synthetic solar output."""
-        base_capacity = 300 + station_idx * 50
+        base_capacity = 300
         
         if 6 <= hour <= 18:
             # Parabolic curve
@@ -225,7 +225,7 @@ class MicroRLTrainer:
     
     def _generate_wind(self, hour: int, station_idx: int) -> float:
         """Generate synthetic wind output."""
-        base = 100 + station_idx * 20
+        base = 100
         
         # Wind varies throughout day
         daily_pattern = 0.5 + 0.5 * np.sin(2 * np.pi * hour / 24)
