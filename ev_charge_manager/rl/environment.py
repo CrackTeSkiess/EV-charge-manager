@@ -540,6 +540,7 @@ class MultiAgentChargingEnv(gym.Env):
             'stranded_vehicles': total_stranded,
             'shortage_events': shortage_events,
             'micro_rl_rewards': micro_rewards,
+            'total_demand_kwh': sim_results.get('total_demand_kwh', 0),
             'renewable_fraction': sim_results['total_renewable_kwh'] /
                 max(1.0, sim_results.get('total_demand_kwh', 1.0)),
         }

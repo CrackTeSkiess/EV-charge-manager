@@ -803,6 +803,146 @@ class TrainingVisualizer:
                        use_tight_layout=False)
         return fig
 
+    def plot_best_model_operations(
+        self,
+        history_path: str,
+        output_dir: Optional[str] = None,
+        show_plot: Optional[bool] = None,
+        smoothing_window: int = 10,
+    ) -> plt.Figure:
+        """
+        Plot charging, queuing, and stranding over training time for the
+        best model episodes.
+
+        Reads ``training_history.jsonl`` and renders a 3-row figure:
+
+        - **Row 1 — Charging demand:** total charging demand (kWh) served
+          per episode, with a rolling mean overlay.  Higher values indicate
+          the infrastructure is handling more traffic.
+        - **Row 2 — Queuing (shortage events):** average shortage events per
+          episode.  Each shortage represents an hour where a station could
+          not fully meet demand — a proxy for queue pressure.
+        - **Row 3 — Stranding:** estimated stranded vehicles per episode.
+          The best-model marker highlights the episode with the lowest cost.
+
+        Parameters
+        ----------
+        history_path:
+            Path to ``training_history.jsonl``.
+        output_dir:
+            If given, saves ``best_model_operations.png`` there.
+        smoothing_window:
+            Rolling-mean window size (number of updates).
+        """
+        records = self._load_jsonl(history_path)
+        if not records:
+            return self._empty_figure(f"No data in {history_path}")
+
+        # Check that operational metrics are present
+        if "stranded_vehicles" not in records[0]:
+            return self._empty_figure(
+                "No operational metrics in training history.\n"
+                "Re-run training to record charging/queuing/stranding data."
+            )
+
+        episodes = [r["episode"] for r in records]
+        charging = [r.get("charging_demand_kwh", 0.0) for r in records]
+        shortage = [r.get("shortage_events", 0.0) for r in records]
+        stranded = [r.get("stranded_vehicles", 0.0) for r in records]
+
+        charging_smooth = _rolling_mean(charging, smoothing_window)
+        shortage_smooth = _rolling_mean(shortage, smoothing_window)
+        stranded_smooth = _rolling_mean(stranded, smoothing_window)
+
+        # Identify the best-model episode (lowest cost)
+        costs = [r.get("cost", float("inf")) for r in records]
+        best_idx = int(np.argmin(costs))
+        best_ep = episodes[best_idx]
+
+        fig = plt.figure(figsize=(12, 10), layout="constrained")
+        gs = gridspec.GridSpec(3, 1, figure=fig, hspace=0.38)
+
+        # --- Row 1: Charging demand ---
+        ax_charge = fig.add_subplot(gs[0])
+        ax_charge.fill_between(
+            episodes, charging, alpha=0.15, color="#2E86AB",
+        )
+        ax_charge.plot(
+            episodes, charging, color="#AED6F1", linewidth=0.8, alpha=0.5,
+            label="Raw",
+        )
+        ax_charge.plot(
+            episodes, charging_smooth, color="#2E86AB", linewidth=2.0,
+            label=f"Rolling mean (w={smoothing_window})",
+        )
+        ax_charge.axvline(
+            best_ep, color="#28A745", linewidth=1.2, linestyle="--",
+            label=f"Best model (ep {best_ep})",
+        )
+        ax_charge.set_ylabel(
+            "Charging Demand (kWh)", fontsize=self.config.label_fontsize,
+        )
+        ax_charge.set_title(
+            "Best-Model Operations Over Training",
+            fontsize=self.config.title_fontsize, fontweight="bold",
+        )
+        ax_charge.legend(fontsize=self.config.tick_fontsize, loc="lower right")
+        ax_charge.tick_params(labelsize=self.config.tick_fontsize)
+
+        # --- Row 2: Queuing (shortage events) ---
+        ax_queue = fig.add_subplot(gs[1])
+        ax_queue.fill_between(
+            episodes, shortage, alpha=0.15, color="#FFC107",
+        )
+        ax_queue.plot(
+            episodes, shortage, color="#FFE082", linewidth=0.8, alpha=0.5,
+            label="Raw",
+        )
+        ax_queue.plot(
+            episodes, shortage_smooth, color="#FFA000", linewidth=2.0,
+            label=f"Rolling mean (w={smoothing_window})",
+        )
+        ax_queue.axvline(
+            best_ep, color="#28A745", linewidth=1.2, linestyle="--",
+            label=f"Best model (ep {best_ep})",
+        )
+        ax_queue.set_ylabel(
+            "Shortage Events (queue pressure)",
+            fontsize=self.config.label_fontsize,
+        )
+        ax_queue.legend(fontsize=self.config.tick_fontsize, loc="upper right")
+        ax_queue.tick_params(labelsize=self.config.tick_fontsize)
+
+        # --- Row 3: Stranding ---
+        ax_strand = fig.add_subplot(gs[2])
+        ax_strand.fill_between(
+            episodes, stranded, alpha=0.15, color="#DC3545",
+        )
+        ax_strand.plot(
+            episodes, stranded, color="#F5B7B1", linewidth=0.8, alpha=0.5,
+            label="Raw",
+        )
+        ax_strand.plot(
+            episodes, stranded_smooth, color="#DC3545", linewidth=2.0,
+            label=f"Rolling mean (w={smoothing_window})",
+        )
+        ax_strand.axvline(
+            best_ep, color="#28A745", linewidth=1.2, linestyle="--",
+            label=f"Best model (ep {best_ep})",
+        )
+        ax_strand.set_xlabel("Episode", fontsize=self.config.label_fontsize)
+        ax_strand.set_ylabel(
+            "Stranded Vehicles", fontsize=self.config.label_fontsize,
+        )
+        ax_strand.legend(fontsize=self.config.tick_fontsize, loc="upper right")
+        ax_strand.tick_params(labelsize=self.config.tick_fontsize)
+
+        self._finalize(
+            fig, output_dir, "best_model_operations.png", show_plot,
+            use_tight_layout=False,
+        )
+        return fig
+
     def generate_full_report(
         self,
         save_dir: str,
@@ -887,6 +1027,11 @@ class TrainingVisualizer:
                      filename="curriculum_stages.png")
         else:
             print(f"Note: {result_path} not found — skipping cost breakdown")
+
+        # Best-model operational metrics (charging / queuing / stranding)
+        if os.path.exists(macro_path):
+            _try(self.plot_best_model_operations, macro_path,
+                 filename="best_model_operations.png")
 
         print(f"Training report: {len(generated)} plots saved to {plots_dir}")
         return generated
