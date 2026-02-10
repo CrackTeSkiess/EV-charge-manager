@@ -8,8 +8,8 @@ from datetime import datetime
 
 import numpy as np
 
-from ChargingAreaEnv import MultiAgentChargingEnv, WeatherProfile, CostParameters
-from PPOTrainer import MultiAgentPPO
+from ev_charge_manager.rl.environment import MultiAgentChargingEnv, WeatherProfile, CostParameters
+from ev_charge_manager.rl.ppo_trainer import MultiAgentPPO
 
 
 def parse_args():

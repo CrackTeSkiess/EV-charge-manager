@@ -7,8 +7,8 @@ import torch
 import numpy as np
 import json
 
-from ChargingAreaEnv import MultiAgentChargingEnv, WeatherProfile, CostParameters
-from PPOTrainer import MultiAgentPPO
+from ev_charge_manager.rl.environment import MultiAgentChargingEnv, WeatherProfile, CostParameters
+from ev_charge_manager.rl.ppo_trainer import MultiAgentPPO
 
 
 def evaluate_pretrained(

@@ -7,7 +7,7 @@ import matplotlib as mpl
 import numpy as np
 from typing import Dict, List
 import json
-from EnergyManager import (
+from ev_charge_manager.energy import (
     EnergyManager,
     EnergyManagerConfig, 
     EnergySourceConfig,
@@ -290,7 +290,7 @@ if __name__ == "__main__":
         
     elif cmd == 'layout':
         # Example layout
-        from EnergyManager import EnergyManagerConfig
+        from ev_charge_manager.energy import EnergyManagerConfig
         config = {
             'positions': [75.0, 150.0, 225.0],
             'n_chargers': [6, 8, 6],

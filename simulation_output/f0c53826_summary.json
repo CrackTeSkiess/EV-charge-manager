@@ -1,0 +1,83 @@
+{
+  "simulation_id": "f0c53826",
+  "stop_reason": "COMPLETED",
+  "stop_message": "Completed all 12 steps",
+  "final_step": 11,
+  "final_time": "2024-01-15T06:12:00",
+  "wall_clock_time_seconds": 0.006033,
+  "summary_statistics": {
+    "simulation_id": "f0c53826",
+    "total_steps": 12,
+    "duration_hours": 0.18333333333333332,
+    "total_cars_quit_waiting": 0,
+    "total_cars_zero_battery": 0,
+    "avg_quit_per_hour": 0.0,
+    "avg_stranded_per_hour": 0.0,
+    "avg_queue_occupancy": 0.0,
+    "peak_queue_occupancy": 0.0,
+    "avg_wait_time": 0.0,
+    "max_wait_time": 0.0,
+    "avg_utilization": 0.0,
+    "avg_service_level": 1.0,
+    "avg_satisfaction": 0.896401839561173,
+    "total_revenue": 0.0,
+    "wait_trend": 0,
+    "wait_time_std": 0.0,
+    "utilization_std": 0.0,
+    "final_completion_rate": 0.0,
+    "final_abandonment_rate": 0.0
+  },
+  "parameters": {
+    "highway_length_km": 3000.0,
+    "num_charging_areas": 5,
+    "charging_area_positions": null,
+    "chargers_per_area": 4,
+    "charger_power_tiers": {
+      "fast": 3,
+      "ultra": 1
+    },
+    "waiting_spots_per_area": 6,
+    "vehicles_per_hour": 40.0,
+    "temporal_distribution": "RANDOM_POISSON",
+    "simulation_duration_hours": 0.2,
+    "vehicle_type_distribution": {
+      "compact": 0.25,
+      "midsize": 0.4,
+      "premium": 0.25,
+      "truck": 0.1
+    },
+    "driver_behavior_distribution": {
+      "conservative": 0.25,
+      "balanced": 0.4,
+      "aggressive": 0.25,
+      "range_anxious": 0.1
+    },
+    "time_step_minutes": 1.0,
+    "start_time": "2024-01-15T06:00:00",
+    "random_seed": null,
+    "early_stop": {
+      "max_simulation_steps": null,
+      "max_wall_clock_seconds": null,
+      "max_consecutive_strandings": 999999,
+      "stranding_window": 5,
+      "max_consecutive_abandonments": 20,
+      "abandonment_rate_threshold": 1.0,
+      "abandonment_window": 10,
+      "max_queue_occupancy": 999.0,
+      "sustained_queue_occupancy_steps": 10,
+      "min_service_level": 0.0,
+      "service_level_window": 20,
+      "convergence_patience": 0,
+      "convergence_tolerance": 0.01,
+      "stop_if_empty": false,
+      "empty_grace_period": 60
+    },
+    "kpi_log_interval": 1,
+    "enable_station_tracking": false,
+    "enable_vehicle_tracking": false,
+    "allow_queue_overflow": true,
+    "energy_manager_configs": null
+  },
+  "stop_trigger": null,
+  "stop_value": null
+}

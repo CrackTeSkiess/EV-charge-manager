@@ -8,11 +8,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from Simulation import Simulation, SimulationParameters, EarlyStopCondition
-from VehicleGenerator import TemporalDistribution
-from VisualizationTool import VisualizationTool
-from StationDataCollector import StationDataCollector
-from EnergyManager import (
+from ev_charge_manager.simulation import Simulation, SimulationParameters, EarlyStopCondition
+from ev_charge_manager.vehicle.generator import TemporalDistribution
+from ev_charge_manager.visualization import VisualizationTool
+from ev_charge_manager.analytics import StationDataCollector
+from ev_charge_manager.energy import (
     EnergyManagerConfig, GridSourceConfig, SolarSourceConfig,
     WindSourceConfig, BatteryStorageConfig
 )
