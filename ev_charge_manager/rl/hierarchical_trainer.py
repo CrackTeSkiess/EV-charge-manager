@@ -551,6 +551,9 @@ class HierarchicalTrainer:
             stage_config = copy.deepcopy(self.config)
             stage_config.macro_episodes = stage['days'] * 100
             
+            # Apply curriculum price variance to the environment
+            self.env.price_variance = stage.get('price_variance', 0.0)
+
             if stage_idx == 0:
                 # First stage: train micro using stage-specific episode count
                 original_macro_eps = self.config.macro_episodes
@@ -558,8 +561,8 @@ class HierarchicalTrainer:
                 result = self.train_sequential()
                 self.config.macro_episodes = original_macro_eps
             else:
-                # Subsequent stages: fine-tune
-                result = self._fine_tune_stage(stage_config)
+                # Subsequent stages: fine-tune with increasing difficulty
+                result = self._fine_tune_stage(stage_config, stage)
             
             results.append({
                 'stage': stage_idx,
@@ -572,9 +575,11 @@ class HierarchicalTrainer:
             'stages': results,
         }
     
-    def _fine_tune_stage(self, config: TrainingConfig) -> Dict:
-        """Fine-tune for a curriculum stage."""
-        # Simplified: just continue training
+    def _fine_tune_stage(self, config: TrainingConfig, stage: Dict) -> Dict:
+        """Fine-tune for a curriculum stage, returning full evaluation metrics."""
+        # Apply curriculum price variance to the environment
+        self.env.price_variance = stage.get('price_variance', 0.0)
+
         if self.macro_trainer is None:
             self.macro_trainer = MultiAgentPPO(
                 env=self.env,
@@ -583,10 +588,20 @@ class HierarchicalTrainer:
             )
         self.macro_trainer.train(
             total_episodes=config.macro_episodes,
-            episodes_per_update=10,
+            episodes_per_update=config.macro_episodes_per_update,
             save_dir=self.config.output_dir,
         )
-        return {'status': 'fine_tuned'}
+
+        # Evaluate so stages 2+ report real metrics
+        eval_result = self.macro_trainer.evaluate(n_episodes=10)
+        return {
+            'status': 'fine_tuned',
+            'macro_episodes': config.macro_episodes,
+            'macro_final_reward': eval_result['avg_reward'],
+            'avg_reward': eval_result['avg_reward'],
+            'avg_cost': eval_result['avg_cost'],
+            'best_config': eval_result.get('best_config'),
+        }
     
     def train(self) -> Dict:
         """Main entry point - selects training mode."""

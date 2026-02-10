@@ -34,15 +34,17 @@ class ActorNetwork(nn.Module):
         
         self.mean_head = nn.Linear(hidden_dim, action_dim)
         self.log_std = nn.Parameter(torch.zeros(action_dim))
-        
+        self.log_std_min = -1.0   # std floor = exp(-1) ≈ 0.37
+
         # Initialize with small weights for stable training
         self.mean_head.weight.data.mul_(0.01)
         self.mean_head.bias.data.mul_(0.0)
-    
+
     def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         features = self.net(obs)
         mean = torch.tanh(self.mean_head(features))  # Bound actions to [-1, 1]
-        std = torch.exp(self.log_std).expand_as(mean)
+        clamped_log_std = torch.clamp(self.log_std, min=self.log_std_min)
+        std = torch.exp(clamped_log_std).expand_as(mean)
         return mean, std
     
     def get_action(self, obs: torch.Tensor, deterministic: bool = False) -> Tuple[np.ndarray, torch.Tensor]:
@@ -104,27 +106,30 @@ class MultiAgentPPO:
         gae_lambda: float = 0.95,
         clip_epsilon: float = 0.2,
         value_coef: float = 0.5,
-        entropy_coef: float = 0.01,
+        entropy_coef: float = 0.05,
+        entropy_coef_end: float = 0.005,
         max_grad_norm: float = 0.5,
         device: str = "auto",
     ):
         self.env = env
         self.n_agents = env.n_agents
-        
+
         # Auto-select device
         if device == "auto":
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = torch.device(device)
-        
+
         print(f"Using device: {self.device}")
-        
+
         # Hyperparameters
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.clip_epsilon = clip_epsilon
         self.value_coef = value_coef
         self.entropy_coef = entropy_coef
+        self.entropy_coef_start = entropy_coef
+        self.entropy_coef_end = entropy_coef_end
         self.max_grad_norm = max_grad_norm
         
         # Get dimensions from environment
@@ -392,9 +397,19 @@ class MultiAgentPPO:
             # Truncate any previous file from an earlier run
             open(history_path, "w").close()
 
+        total_updates = max(1, total_episodes // episodes_per_update)
+
         for update_idx in range(0, total_episodes, episodes_per_update):
             update_num = update_idx // episodes_per_update + 1
             episode_num = update_idx + episodes_per_update  # last episode in this batch
+
+            # Linear entropy coefficient decay
+            frac = update_num / total_updates
+            self.entropy_coef = (
+                self.entropy_coef_start
+                + (self.entropy_coef_end - self.entropy_coef_start) * frac
+            )
+
             print(f"\n--- Update {update_num} ---")
             trajectories = self.collect_trajectories(episodes_per_update)
 
@@ -409,7 +424,8 @@ class MultiAgentPPO:
             print(f"Avg Reward: {avg_reward:.2f}, Avg Cost: {avg_cost:.0f}")
             print(f"Policy Loss: {metrics['policy_loss']:.4f}, "
                   f"Value Loss: {metrics['value_loss']:.4f}, "
-                  f"Entropy: {metrics['entropy']:.4f}")
+                  f"Entropy: {metrics['entropy']:.4f}, "
+                  f"Entropy Coef: {self.entropy_coef:.4f}")
 
             if avg_reward > self.best_avg_reward:
                 self.best_avg_reward = avg_reward
@@ -436,6 +452,7 @@ class MultiAgentPPO:
                     "policy_loss": float(metrics['policy_loss']),
                     "value_loss": float(metrics['value_loss']),
                     "entropy": float(metrics['entropy']),
+                    "entropy_coef": float(self.entropy_coef),
                 }
                 if best_config is not None:
                     record["best_config"] = {

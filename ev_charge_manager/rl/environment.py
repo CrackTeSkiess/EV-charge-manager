@@ -133,6 +133,7 @@ class MultiAgentChargingEnv(gym.Env):
         self.collaboration_weight = collaboration_weight
         self.enable_micro_rl = enable_micro_rl
         self.micro_rl_device = micro_rl_device
+        self.price_variance: float = 0.0  # curriculum-controlled grid price noise
         
         # Initialize macro agents
         self.agents: List[ChargingAreaAgent] = []
@@ -399,13 +400,22 @@ class MultiAgentChargingEnv(gym.Env):
         
         for hour in range(hours):
             timestamp = base_date + timedelta(hours=hour)
-            
+
+            # Apply curriculum-controlled price variance to grid pricing each hour
+            if self.price_variance > 0:
+                noise = random.gauss(0, self.price_variance)
+                for manager in managers:
+                    ps = manager.pricing_schedule
+                    ps.peak_price = max(0.05, self.cost_params.grid_peak_price * (1 + noise))
+                    ps.shoulder_price = max(0.03, self.cost_params.grid_shoulder_price * (1 + noise))
+                    ps.off_peak_price = max(0.01, self.cost_params.grid_offpeak_price * (1 + noise))
+
             # Calculate traffic-based demand for each station
             # Peak traffic around hours 8-9 and 17-18
             traffic_factor = 1.0
             if 7 <= hour <= 9 or 17 <= hour <= 19:
                 traffic_factor = 1.5
-            
+
             for i, manager in enumerate(managers):
                 # Base demand varies by traffic and station size
                 base_demand = n_chargers_list[i] * 50 * traffic_factor  # 50kW per charger
