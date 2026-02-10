@@ -266,18 +266,114 @@ def create_summary_report(result_path: str, output_path: str = 'report.pdf'):
     print(f"Report saved to {output_path}")
 
 
+def _cmd_training(args: "argparse.Namespace") -> None:  # noqa: F821
+    """Generate all training plots from a single save directory."""
+    from ev_charge_manager.visualization.training_plots import TrainingVisualizer
+    tv = TrainingVisualizer()
+    plots = tv.generate_full_report(
+        save_dir=args.save_dir,
+        show_plots=args.show,
+        highway_length=args.highway_length,
+    )
+    print(f"\n{len(plots)} plot(s) written to {args.save_dir}/training_plots/")
+
+
+def _cmd_compare(args: "argparse.Namespace") -> None:  # noqa: F821
+    """Generate cross-mode comparison plots from multiple save directories."""
+    from ev_charge_manager.visualization.training_plots import TrainingVisualizer
+    tv = TrainingVisualizer()
+    output_dir = args.output_dir or args.dirs[0]
+    fig = tv.plot_mode_comparison(
+        result_dirs=args.dirs,
+        output_dir=output_dir,
+        show_plot=args.show,
+        smoothing_window=args.smoothing_window,
+    )
+    if fig is not None:
+        print(f"Comparison plot written to {output_dir}/mode_comparison.png")
+
+
 if __name__ == "__main__":
+    import argparse
     import sys
-    
-    if len(sys.argv) < 2:
-        print("Usage: python visualize.py <command> [args]")
-        print("Commands: curves, layout, energy, report")
-        sys.exit(1)
-    
-    cmd = sys.argv[1]
-    
-    if cmd == 'curves':
-        # Example: plot training curves
+
+    parser = argparse.ArgumentParser(
+        prog="visualize.py",
+        description="Visualization tools for EV charging optimization",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    # ── training ─────────────────────────────────────────────────────────────
+    p_train = sub.add_parser(
+        "training",
+        help="Generate all training plots from a hierarchical training run",
+        description=(
+            "Reads training_history.jsonl, micro_history.json, micro_final_day.json "
+            "and training_result.json from SAVE_DIR and produces PNG plots."
+        ),
+    )
+    p_train.add_argument(
+        "--save-dir", default="./models/hierarchical",
+        metavar="DIR",
+        help="Directory produced by 'python hierarchical.py'",
+    )
+    p_train.add_argument(
+        "--highway-length", type=float, default=300.0,
+        help="Highway length in km (auto-read from run_config.json if present)",
+    )
+    p_train.add_argument(
+        "--show", action="store_true",
+        help="Display plots interactively in addition to saving them",
+    )
+
+    # ── compare ──────────────────────────────────────────────────────────────
+    p_cmp = sub.add_parser(
+        "compare",
+        help="Compare multiple training runs (different modes) side-by-side",
+        description=(
+            "Reads training_result.json and training_history.jsonl from each "
+            "directory in DIRS and overlays them on a single comparison figure."
+        ),
+    )
+    p_cmp.add_argument(
+        "--dirs", nargs="+", required=True,
+        metavar="DIR",
+        help="One or more save directories to compare (e.g. ./models/seq ./models/sim)",
+    )
+    p_cmp.add_argument(
+        "--output-dir", default=None,
+        metavar="DIR",
+        help="Where to write mode_comparison.png (defaults to the first --dirs entry)",
+    )
+    p_cmp.add_argument(
+        "--smoothing-window", type=int, default=10,
+        metavar="N",
+        help="Rolling-mean window for learning curves",
+    )
+    p_cmp.add_argument(
+        "--show", action="store_true",
+        help="Display the comparison plot interactively in addition to saving it",
+    )
+
+    # ── legacy commands ───────────────────────────────────────────────────────
+    p_curves = sub.add_parser("curves",  help="Plot example training curves (demo)")
+    p_layout = sub.add_parser("layout",  help="Plot example highway layout (demo)")
+    p_report = sub.add_parser("report",  help="Create PDF summary report")
+    p_report.add_argument("--result", default="results.json",
+                          help="Path to results JSON file")
+    p_report.add_argument("--output", default="optimization_report.pdf",
+                          help="Output PDF path")
+
+    args = parser.parse_args()
+
+    if args.command == "training":
+        _cmd_training(args)
+
+    elif args.command == "compare":
+        _cmd_compare(args)
+
+    elif args.command == "curves":
         history = {
             'episodes': list(range(1000)),
             'rewards': np.random.randn(1000).cumsum() + np.linspace(-100, -50, 1000),
@@ -287,9 +383,8 @@ if __name__ == "__main__":
             'entropy_losses': np.abs(np.random.randn(100)) * 0.1 + 0.5,
         }
         plot_training_curves(history, 'training_curves.png')
-        
-    elif cmd == 'layout':
-        # Example layout
+
+    elif args.command == "layout":
         from ev_charge_manager.energy import EnergyManagerConfig
         config = {
             'positions': [75.0, 150.0, 225.0],
@@ -305,7 +400,7 @@ if __name__ == "__main__":
                         max_charge_rate_kw=400,
                         max_discharge_rate_kw=400,
                     )
-                ]),                
+                ]),
                 EnergyManagerConfig([
                     GridSourceConfig(max_power_kw=800),
                     SolarSourceConfig(peak_power_kw=300),
@@ -331,6 +426,10 @@ if __name__ == "__main__":
         }
         plot_highway_layout(config, 300, 'layout.png')
         plot_energy_mix(config, 'energy_mix.png')
-        
-    elif cmd == 'report':
-        create_summary_report('results.json', 'optimization_report.pdf')
+
+    elif args.command == "report":
+        create_summary_report(args.result, args.output)
+
+    else:
+        parser.print_help()
+        sys.exit(0)

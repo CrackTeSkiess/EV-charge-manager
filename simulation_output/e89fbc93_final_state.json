@@ -1,0 +1,140 @@
+{
+  "vehicles_remaining": 12,
+  "total_spawned": 240,
+  "total_completed": 228,
+  "total_stranded": 0,
+  "final_queue_states": {
+    "AREA-01": {
+      "queue_length": 59,
+      "charging": 4
+    },
+    "AREA-02": {
+      "queue_length": 38,
+      "charging": 4
+    },
+    "AREA-03": {
+      "queue_length": 5,
+      "charging": 4
+    },
+    "AREA-04": {
+      "queue_length": 0,
+      "charging": 3
+    },
+    "AREA-05": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-06": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-07": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-08": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-09": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-10": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-11": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-12": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-13": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-14": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-15": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-16": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-17": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-18": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-19": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-20": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-21": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-22": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-23": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-24": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-25": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-26": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-27": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-28": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-29": {
+      "queue_length": 0,
+      "charging": 0
+    },
+    "AREA-30": {
+      "queue_length": 0,
+      "charging": 0
+    }
+  },
+  "tracker_summary": {
+    "total_spawned": 240,
+    "total_completed": 0,
+    "total_stranded": 12,
+    "total_abandonments": 6,
+    "currently_active": 228,
+    "currently_driving": 111,
+    "currently_queued": 102,
+    "currently_charging": 15,
+    "completion_rate": 0.0,
+    "stranding_rate": 0.05
+  }
+}

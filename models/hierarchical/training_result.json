@@ -1,0 +1,34 @@
+{
+  "mode": "sequential",
+  "micro_episodes": 1000,
+  "macro_episodes": 500,
+  "micro_final_reward": -220.01725719251468,
+  "macro_final_reward": -0.2728019377280899,
+  "best_config": {
+    "positions": "[ 85.96679211 130.         240.82274199]",
+    "configs": [
+      "EnergyManagerConfig(source_configs=[GridSourceConfig(source_type='grid', max_power_kw=778.41748046875), SolarSourceConfig(source_type='solar', peak_power_kw=236.92140197753906, sunrise_hour=6.0, sunset_hour=20.0, peak_hour=13.0), BatteryStorageConfig(source_type='battery', capacity_kwh=800.0, max_charge_rate_kw=128.46144104003906, max_discharge_rate_kw=128.46144104003906, initial_soc=0.5, min_soc=0.1, max_soc=0.95, round_trip_efficiency=0.9)])",
+      "EnergyManagerConfig(source_configs=[GridSourceConfig(source_type='grid', max_power_kw=1000.0), WindSourceConfig(source_type='wind', base_power_kw=384.8146667480469, min_power_kw=10.0, max_power_kw=100.0, variability=0.3)])",
+      "EnergyManagerConfig(source_configs=[GridSourceConfig(source_type='grid', max_power_kw=392.87286376953125), SolarSourceConfig(source_type='solar', peak_power_kw=281.4212646484375, sunrise_hour=6.0, sunset_hour=20.0, peak_hour=13.0), WindSourceConfig(source_type='wind', base_power_kw=137.8691864013672, min_power_kw=10.0, max_power_kw=100.0, variability=0.3), BatteryStorageConfig(source_type='battery', capacity_kwh=294.62762451171875, max_charge_rate_kw=54.72470474243164, max_discharge_rate_kw=54.72470474243164, initial_soc=0.5, min_soc=0.1, max_soc=0.95, round_trip_efficiency=0.9)])"
+    ],
+    "managers": [
+      "<ev_charge_manager.energy.hierarchical_manager.HierarchicalEnergyManager object at 0x7965737d5880>",
+      "<ev_charge_manager.energy.hierarchical_manager.HierarchicalEnergyManager object at 0x7965737d5b20>",
+      "<ev_charge_manager.energy.hierarchical_manager.HierarchicalEnergyManager object at 0x7965737d6480>"
+    ],
+    "n_chargers": [
+      2,
+      2,
+      2
+    ],
+    "n_waiting": [
+      17,
+      12,
+      18
+    ],
+    "cost": "557.4017",
+    "grid_cost": "490.98117",
+    "arbitrage_profit": "2000.8312"
+  },
+  "training_time_seconds": 92.54343605041504
+}

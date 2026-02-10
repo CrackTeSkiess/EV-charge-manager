@@ -139,12 +139,14 @@ def parse_args() -> argparse.Namespace:
 
     # ── System ───────────────────────────────────────────────────────────────
     sys_group = parser.add_argument_group("System")
-    sys_group.add_argument("--device",   type=str, default="auto",
+    sys_group.add_argument("--device",   type=str, default="cpu",
                            help="Compute device: auto / cpu / cuda")
     sys_group.add_argument("--seed",     type=int, default=None,
                            help="Global random seed")
     sys_group.add_argument("--save-dir", type=str, default="./models/hierarchical",
                            help="Root directory for checkpoints and final models")
+    sys_group.add_argument("--no-visualize", action="store_true",
+                           help="Skip auto-generation of training plots after training")
 
     return parser.parse_args()
 
@@ -442,6 +444,27 @@ def main() -> None:
         micro_path = os.path.join(args.save_dir, "micro_pretrained")
         print(f"  micro_pretrained/ – trained energy-arbitrage agents")
         print(f"    Reuse with:  --mode frozen_micro --micro-load {micro_path}")
+
+    # ── Post-training visualisation ───────────────────────────────────────────
+    if not args.no_visualize:
+        try:
+            from ev_charge_manager.visualization.training_plots import TrainingVisualizer
+            print("\nGenerating training plots …")
+            plots = TrainingVisualizer().generate_full_report(
+                save_dir=args.save_dir,
+                show_plots=False,
+                highway_length=args.highway_length,
+            )
+            if plots:
+                print(f"  Plots saved to {args.save_dir}/training_plots/")
+                print(f"  Re-run manually:  python visualize.py training "
+                      f"--save-dir {args.save_dir}")
+        except Exception as exc:
+            print(f"  Warning: could not generate training plots: {exc}")
+    else:
+        print("\nSkipping training plots (--no-visualize).")
+        print(f"  Generate later with:  python visualize.py training "
+              f"--save-dir {args.save_dir}")
 
 
 if __name__ == "__main__":

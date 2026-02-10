@@ -93,8 +93,13 @@ class MicroRLTrainer:
         self.agents: List[EnergyManagerAgent] = []
         self._create_agents()
         
-        # Training stats
+        # Training stats — one inner list per station, one entry per episode
         self.episode_rewards: List[List[float]] = [[] for _ in range(n_stations)]
+        self.episode_grid_costs: List[List[float]] = [[] for _ in range(n_stations)]
+
+        # Hourly breakdown from the most-recently completed episode (per station)
+        self.last_episode_hourly: List[List[Dict]] = [[] for _ in range(n_stations)]
+
         self.best_avg_reward: float = float('-inf')
     
     def _create_agents(self):
@@ -117,68 +122,76 @@ class MicroRLTrainer:
         """
         daily_rewards = [[] for _ in range(self.n_stations)]
         daily_grid_costs = [0.0 for _ in range(self.n_stations)]
-        
+        hourly_data_per_station: List[List[Dict]] = [[] for _ in range(self.n_stations)]
+
         # Simulate one day per station
         for station_idx, agent in enumerate(self.agents):
             agent.reset(initial_soc=0.5)
-            
+
             base_date = datetime(2024, 6, 15, 0, 0)
-            hourly_results = []
-            
+
             for hour in range(24):
                 timestamp = base_date + timedelta(hours=hour)
-                
+
                 # Generate synthetic demand and generation
                 demand_kw = self._generate_demand(hour, station_idx)
                 solar = self._generate_solar(hour, station_idx)
                 wind = self._generate_wind(hour, station_idx)
                 price = self.pricing.get_price(hour)
-                
+
                 # Agent selects action
                 action, log_prob, value = agent.select_action(
                     timestamp, solar, wind, demand_kw, price,
                     deterministic=False,
                 )
-                
+
                 # Interpret action and get energy flows
                 flows = agent.interpret_action(action, solar, wind, demand_kw)
-                
+
                 # Update battery SOC: battery_power is in kW, each step is 1 hour → kWh
                 battery_change = flows['battery_power'] * 1.0  # kW × 1 h = kWh
                 new_soc = agent.current_soc + battery_change / agent.battery_capacity_kwh
                 agent.current_soc = float(np.clip(new_soc, 0.0, 1.0))
-                
+
                 # Compute reward
                 reward = agent.compute_reward(flows, price, timestamp)
                 daily_rewards[station_idx].append(reward)
-                
+
                 # Store transition
                 obs = agent._get_observation(timestamp, solar, wind, demand_kw, price)
-                agent.store_transition(obs, action, reward, log_prob, value, done=(hour==23))
-                
-                daily_grid_costs[station_idx] += flows['grid_power'] * price * (1/24)
-                hourly_results.append({
+                agent.store_transition(obs, action, reward, log_prob, value, done=(hour == 23))
+
+                daily_grid_costs[station_idx] += flows['grid_power'] * price * (1 / 24)
+                hourly_data_per_station[station_idx].append({
                     'hour': hour,
-                    'reward': reward,
-                    'grid_cost': flows['grid_power'] * price,
-                    'battery_soc': agent.current_soc,
-                    'action': action,
+                    'reward': float(reward),
+                    'grid_cost': float(flows['grid_power'] * price),
+                    'battery_soc': float(agent.current_soc),
+                    'action': float(action) if np.isscalar(action) else action.tolist(),
                 })
-            
+
             # Update agent policy at end of day
             if len(agent.trajectory_buffer) >= 24:
-                update_info = agent.update(n_epochs=5, batch_size=24)
-            
-            self.episode_rewards[station_idx].append(np.sum(daily_rewards[station_idx]))
-        
+                agent.update(n_epochs=5, batch_size=24)
+
+            episode_total = float(np.sum(daily_rewards[station_idx]))
+            self.episode_rewards[station_idx].append(episode_total)
+            self.episode_grid_costs[station_idx].append(daily_grid_costs[station_idx])
+
+        # Persist hourly breakdown for the most recently completed episode
+        self.last_episode_hourly = hourly_data_per_station
+
         # Return metrics
-        avg_rewards = [float(np.mean(r[-100:])) if len(r) > 0 else 0.0 for r in self.episode_rewards]
-        
+        avg_rewards = [
+            float(np.mean(r[-100:])) if len(r) > 0 else 0.0
+            for r in self.episode_rewards
+        ]
+
         return {
-            'avg_reward': np.mean(avg_rewards),
-            'per_station_rewards': [np.sum(r) for r in daily_rewards],
-            'grid_costs': daily_grid_costs,
-            'hourly_data': hourly_results,
+            'avg_reward': float(np.mean(avg_rewards)),
+            'per_station_rewards': [float(np.sum(r)) for r in daily_rewards],
+            'grid_costs': [float(c) for c in daily_grid_costs],
+            'hourly_data': hourly_data_per_station,
         }
     
     def _generate_demand(self, hour: int, station_idx: int) -> float:
@@ -274,12 +287,38 @@ class MicroRLTrainer:
             'rewards_per_station': episode_rewards,
         }
     
+    def save_history(self, output_dir: str):
+        """
+        Persist micro-RL training history to *output_dir*.
+
+        Writes two files:
+        - ``micro_history.json``   — per-station episode rewards and grid costs
+        - ``micro_final_day.json`` — hourly breakdown from the last episode
+        """
+        os.makedirs(output_dir, exist_ok=True)
+
+        history = {
+            "n_stations": self.n_stations,
+            "n_episodes": max(len(r) for r in self.episode_rewards) if self.episode_rewards else 0,
+            "per_station_rewards": [list(r) for r in self.episode_rewards],
+            "per_station_grid_costs": [list(c) for c in self.episode_grid_costs],
+        }
+        with open(os.path.join(output_dir, "micro_history.json"), "w") as fh:
+            json.dump(history, fh, indent=2)
+
+        final_day = {
+            "n_stations": self.n_stations,
+            "stations": self.last_episode_hourly,
+        }
+        with open(os.path.join(output_dir, "micro_final_day.json"), "w") as fh:
+            json.dump(final_day, fh, indent=2)
+
     def save(self, path: str):
         """Save all micro-agents."""
         os.makedirs(path, exist_ok=True)
         for i, agent in enumerate(self.agents):
             agent.save(os.path.join(path, f"micro_agent_{i}.pt"))
-        
+
         # Save config
         with open(os.path.join(path, "config.json"), 'w') as f:
             json.dump(self.base_config, f)
@@ -381,10 +420,12 @@ class HierarchicalTrainer:
         print(f"  Avg Reward: {micro_eval['avg_reward']:.2f}")
         print(f"  Avg Grid Cost: ${micro_eval['avg_grid_cost']:.2f}")
         
-        # Save micro-agents
+        # Save micro-agents and training history
         micro_path = os.path.join(self.config.output_dir, "micro_pretrained")
         self.micro_trainer.save(micro_path)
+        self.micro_trainer.save_history(self.config.output_dir)
         print(f"Micro-agents saved to {micro_path}")
+        print(f"Micro history saved to {self.config.output_dir}/micro_history.json")
         
         # === PHASE 2: MACRO-RL TRAINING ===
         self.current_phase = "macro"
@@ -410,6 +451,7 @@ class HierarchicalTrainer:
             episodes_per_update=self.config.macro_episodes_per_update,
             eval_interval=self.config.eval_frequency,
             save_interval=self.config.checkpoint_frequency,
+            save_dir=self.config.output_dir,
         )
         
         # Final evaluation
@@ -447,19 +489,19 @@ class HierarchicalTrainer:
         # Training loop
         for episode in range(self.config.macro_episodes):
             self.episode_count = episode
-            
+
             # Collect trajectories with simultaneous micro learning
             trajectories = self._collect_simultaneous_trajectories()
-            
+
             # Update macro
             macro_metrics = self.macro_trainer.update(trajectories)
-            
+
             # Log
             if (episode + 1) % 10 == 0:
                 avg_reward = np.mean([np.sum(r) for r in trajectories['rewards']])
                 print(f"Episode {episode+1}: Macro Reward = {avg_reward:.2f}, "
                       f"Policy Loss = {macro_metrics['policy_loss']:.4f}")
-            
+
             # Periodic evaluation
             if (episode + 1) % self.config.eval_frequency == 0:
                 self.macro_trainer.evaluate(n_episodes=5)
@@ -542,6 +584,7 @@ class HierarchicalTrainer:
         self.macro_trainer.train(
             total_episodes=config.macro_episodes,
             episodes_per_update=10,
+            save_dir=self.config.output_dir,
         )
         return {'status': 'fine_tuned'}
     

@@ -139,9 +139,10 @@ def main():
         if args.energy_battery_kwh is not None:
             source_configs.append(BatteryStorageConfig(capacity_kwh=args.energy_battery_kwh))
 
-        # Same config for every station
+        # Independent config instance per station (avoid shared reference mutations)
+        from copy import deepcopy
         single_config = EnergyManagerConfig(source_configs=source_configs)
-        energy_configs = [single_config] * args.num_stations
+        energy_configs = [deepcopy(single_config) for _ in range(args.num_stations)]
 
     # Create simulation parameters
     params = SimulationParameters(
@@ -167,7 +168,7 @@ def main():
     print(f"Highway: {args.highway_length} km with {args.num_stations} charging stations")
     print(f"Traffic: {args.vehicles_per_hour} vehicles/hour ({args.traffic_pattern})")
     print(f"Duration: {args.duration} hours")
-    if args.seed:
+    if args.seed is not None:
         print(f"Random seed: {args.seed}")
     if has_energy:
         sources = []

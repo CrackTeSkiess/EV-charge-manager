@@ -371,23 +371,47 @@ class EnergyManager:
         """
         Charge battery using excess renewable energy.
         This happens before any demand is served.
+
+        Power drawn from renewables is debited from available_power_kw on each
+        renewable source so the same electrons cannot be double-spent when
+        chargers subsequently call request_energy().
         """
-        total_renewable = self.total_renewable_available_kw
-        
-        # Try to charge batteries with available renewable power
+        if self.total_renewable_available_kw <= 0:
+            return
+
+        # Use up to 30% of total renewable capacity for battery pre-charging
+        charge_budget_kw = self.total_renewable_available_kw * 0.3
+
         for battery in self.sources[EnergySourceType.BATTERY]:
-            if battery.is_battery_full():
+            if battery.is_battery_full() or charge_budget_kw <= 0:
                 continue
-            
-            # Use up to 30% of renewable capacity for charging
-            charge_request = total_renewable * 0.3
-            
-            actual_charge = battery.charge_battery(charge_request, duration_hours)
-            
-            if actual_charge > 0:
-                self.stats['battery_charged_kwh'] += actual_charge * duration_hours
-                # Reduce available renewable for demand
-                total_renewable = max(0, total_renewable - actual_charge)
+
+            actual_charge_kw = battery.charge_battery(charge_budget_kw, duration_hours)
+
+            if actual_charge_kw > 0:
+                self.stats['battery_charged_kwh'] += actual_charge_kw * duration_hours
+
+                # Debit consumed power from renewable sources (solar first, then wind)
+                # so chargers cannot double-spend it via request_energy().
+                remaining_to_debit = actual_charge_kw
+                for solar in self.sources[EnergySourceType.SOLAR]:
+                    if remaining_to_debit <= 0:
+                        break
+                    debit = min(remaining_to_debit, solar.available_power_kw)
+                    solar.available_power_kw -= debit
+                    remaining_to_debit -= debit
+                for wind in self.sources[EnergySourceType.WIND]:
+                    if remaining_to_debit <= 0:
+                        break
+                    debit = min(remaining_to_debit, wind.available_power_kw)
+                    wind.available_power_kw -= debit
+                    remaining_to_debit -= debit
+
+                # Keep the cached totals consistent
+                self.total_renewable_available_kw = max(
+                    0.0, self.total_renewable_available_kw - actual_charge_kw
+                )
+                charge_budget_kw -= actual_charge_kw
     
     def request_energy(self, power_kw: float, charger_id: str,
                       duration_hours: float = 1.0) -> float:

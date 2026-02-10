@@ -9,6 +9,10 @@ pandas>=1.3.0
 matplotlib>=3.4.0
 seaborn>=0.11.0
 
+# RL
+pytorch
+gymnasium
+
 # For type annotations (already in Python 3.8+, but listed for clarity)
 # typing-extensions>=4.0.0
 

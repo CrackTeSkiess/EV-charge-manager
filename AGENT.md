@@ -69,6 +69,7 @@ EV-charge-manager/                  ← root: entry points + docs only
 │   │
 │   └── visualization/              ← charts and dashboards
 │       ├── tool.py                 ↳ VisualizationTool, ChartConfig (~1570 lines)
+│       ├── training_plots.py       ↳ TrainingVisualizer — learning curves, config evolution, battery strategy
 │       ├── config.py               ↳ re-exports ChartConfig
 │       ├── time_series.py          ↳ re-exports VisualizationTool (time-series plots)
 │       ├── station_plots.py        ↳ re-exports VisualizationTool (per-station charts)
@@ -184,9 +185,18 @@ python hierarchical.py --mode frozen_micro \
 
 All outputs land in `--save-dir` (default `./models/hierarchical/`):
 - `run_config.json` — CLI parameters used
-- `results.json` — final training metrics
+- `results.json` / `training_result.json` — final training metrics
+- `training_history.jsonl` — one JSON record per PPO update (streaming)
+- `micro_history.json` — per-station episode rewards and grid costs
+- `micro_final_day.json` — hourly breakdown from the last micro episode
 - `micro_pretrained/` — trained energy-arbitrage agents (reusable)
-- `training_result.json` — full HierarchicalTrainer output
+- `training_plots/` — auto-generated PNG plots (pass `--no-visualize` to skip)
+
+Regenerate plots at any time:
+```bash
+python visualize.py training --save-dir ./models/hierarchical
+python visualize.py compare  --dirs ./models/sequential ./models/curriculum
+```
 
 ### Analysis tools
 ```bash
@@ -304,6 +314,7 @@ DRIVING → APPROACHING → QUEUED → CHARGING → EXITING → COMPLETED
 | `StrandedVehicleTracker` | `ev_charge_manager.analytics` | stranded_vehicle_tracker.py |
 | `EarlyWarningExtractor` | `ev_charge_manager.analytics` | early_warning_system.py |
 | `VisualizationTool` | `ev_charge_manager.visualization` | VisualizationTool.py |
+| `TrainingVisualizer` | `ev_charge_manager.visualization` | visualization/training_plots.py |
 
 ---
 

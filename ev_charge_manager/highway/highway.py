@@ -320,9 +320,15 @@ class Highway:
         # INCREASED from 0.5 km to 3.0 km to prevent vehicles from jumping over
         # At 120 km/h, vehicles move 2 km per minute, so 3 km ensures detection
         DETECTION_THRESHOLD_KM = 3.0
-        
-        for km, area_id in self.station_positions.items():
-            if abs(vehicle.position_km - km) < DETECTION_THRESHOLD_KM:
+
+        # O(log N) bisect range instead of O(N) full scan
+        pos = vehicle.position_km
+        lo = bisect.bisect_left(self._sorted_stations, pos - DETECTION_THRESHOLD_KM)
+        hi = bisect.bisect_right(self._sorted_stations, pos + DETECTION_THRESHOLD_KM)
+        for i in range(lo, hi):
+            km = self._sorted_stations[i]
+            area_id = self.station_positions[km]
+            if abs(pos - km) < DETECTION_THRESHOLD_KM:
                 # Vehicle is at station location
                 next_station_km = self._next_station_map.get(km)
 
@@ -367,11 +373,30 @@ class Highway:
 
         must_stop = vehicle.must_stop_at_station(current_station_km, next_station_km, self.length_km)
 
+        # Compute energy needed now (used for both immediate and queued paths)
+        if next_station_km is not None:
+            distance_to_next = abs(next_station_km - current_station_km)
+        else:
+            distance_to_next = abs(self.length_km - current_station_km)
+        safety_distance = distance_to_next + 30.0
+        highway_speed = vehicle.driver.speed_preference_kmh
+        consumption_rate = vehicle.calculate_consumption_rate(highway_speed)
+        safety_energy_needed = consumption_rate * safety_distance
+        target_energy_needed = vehicle.battery.capacity_kwh * (
+            vehicle.driver.target_soc - vehicle.battery.current_soc
+        )
+        energy_needed_kwh = max(safety_energy_needed, target_energy_needed)
+        max_energy = vehicle.battery.capacity_kwh * (1.0 - vehicle.battery.current_soc)
+        energy_needed_kwh = min(energy_needed_kwh, max_energy)
+        vehicle_soc = vehicle.battery.current_soc
+
         # Request entry to charging area
         result = area.request_entry(
             vehicle_id=vehicle_id,
             priority_score=vehicle.current_patience,
-            power_preference=None  # Could be based on vehicle capability
+            power_preference=None,  # Could be based on vehicle capability
+            energy_needed_kwh=energy_needed_kwh,
+            vehicle_soc=vehicle_soc,
         )
 
         self._log_highway_event("HANDOFF_REQUEST", 
@@ -393,47 +418,12 @@ class Highway:
                         vehicle_id, timestamp, area_id, "immediate entry"
                     )
 
-                # Start session (simplified - would get energy need from vehicle)
-                # Calculate energy needed - SAFETY FIRST
-                # Must have enough to reach next station or highway end
-                # (next_station_km already computed above via _next_station_map)
-
-                # Calculate energy needed for safety (to reach next destination)
-                if next_station_km is not None:
-                    distance_to_next = abs(next_station_km - current_station_km)
-                else:
-                    distance_to_next = abs(self.length_km - current_station_km)
-                
-                # Add 30km buffer for safety
-                safety_distance = distance_to_next + 30.0
-                highway_speed = vehicle.driver.speed_preference_kmh
-                consumption_rate = vehicle.calculate_consumption_rate(highway_speed)
-                safety_energy_needed = consumption_rate * safety_distance
-                
-                # Current energy needed to reach target SOC
-                target_energy_needed = vehicle.battery.capacity_kwh * (vehicle.driver.target_soc - vehicle.battery.current_soc)
-                
-                # Use the MAXIMUM of safety requirement and driver preference
-                energy_needed_kwh = max(safety_energy_needed, target_energy_needed)
-                
-                # Cap at battery capacity
-                max_energy = vehicle.battery.capacity_kwh * (1.0 - vehicle.battery.current_soc)
-                energy_needed_kwh = min(energy_needed_kwh, max_energy)
-
-                # Start session (simplified - would get energy need from vehicle)
+                # Start charging using the energy target computed before request_entry()
                 session_result = area.start_charging(
                     vehicle_id=vehicle_id,
                     energy_needed_kwh=energy_needed_kwh,
-                    vehicle_soc=vehicle.battery.current_soc
-                )                
-                '''
-                session_result = area.start_charging(
-                    vehicle_id=vehicle_id,
-                    energy_needed_kwh=vehicle.battery.capacity_kwh *
-                                     (vehicle.driver.target_soc - vehicle.battery.current_soc),
-                    vehicle_soc=vehicle.battery.current_soc
+                    vehicle_soc=vehicle_soc,
                 )
-                '''
 
                 if session_result:
                     vehicle.start_charging(
@@ -478,25 +468,11 @@ class Highway:
                 # Denied - but check if must_stop and overflow allowed
                 if must_stop and self.allow_queue_overflow:
                     # EMERGENCY: Vehicle cannot be turned away - force into overflow queue
-                    self.vehicles_in_queue[vehicle_id] = (area_id, timestamp)
-                    vehicle.set_state(VehicleState.QUEUED, timestamp,
-                                    f"emergency queued at {area_id} (overflow)")
-                    vehicle.queue_entry_time = timestamp
-                    vehicle.target_station_id = area_id
-                    area.waiting_occupied += 1  # Track overflow
-
-                    if self.tracker:
-                        self.tracker.transition_to_queued(
-                            vehicle_id, timestamp, area_id, "emergency overflow queue"
-                        )
-
-                    self._log_highway_event("QUEUE_EMERGENCY",
-                                           "Forced into overflow queue",
-                                           vehicle_id)
-
+                    self._force_overflow_queue(vehicle_id, area, area_id, timestamp,
+                                               energy_needed_kwh, vehicle_soc, "overflow")
                     return {
                         'status': 'queued',
-                        'position': len(area.queue) + 1,
+                        'position': len(area.queue),
                         'estimated_wait': area.estimate_wait_time(),
                         'overflow': True
                     }
@@ -515,25 +491,11 @@ class Highway:
             # Entry rejected - but check if must_stop and overflow allowed
             if must_stop and self.allow_queue_overflow:
                 # EMERGENCY: Vehicle cannot be turned away - force into overflow queue
-                self.vehicles_in_queue[vehicle_id] = (area_id, timestamp)
-                vehicle.set_state(VehicleState.QUEUED, timestamp,
-                                f"emergency queued at {area_id} (overflow)")
-                vehicle.queue_entry_time = timestamp
-                vehicle.target_station_id = area_id
-                area.waiting_occupied += 1  # Track overflow
-
-                if self.tracker:
-                    self.tracker.transition_to_queued(
-                        vehicle_id, timestamp, area_id, "emergency overflow queue"
-                    )
-
-                self._log_highway_event("QUEUE_EMERGENCY",
-                                       "Forced into overflow queue (rejected)",
-                                       vehicle_id)
-
+                self._force_overflow_queue(vehicle_id, area, area_id, timestamp,
+                                           energy_needed_kwh, vehicle_soc, "rejected")
                 return {
                     'status': 'queued',
-                    'position': len(area.queue) + 1,
+                    'position': len(area.queue),
                     'estimated_wait': area.estimate_wait_time(),
                     'overflow': True
                 }
@@ -548,6 +510,50 @@ class Highway:
                     )
 
                 return {'status': 'rejected', 'reason': result.get('reason')}
+
+    def _force_overflow_queue(self, vehicle_id: str, area: ChargingArea,
+                              area_id: str, timestamp: datetime,
+                              energy_needed_kwh: float, vehicle_soc: float,
+                              reason_label: str) -> None:
+        """
+        Force a must-stop vehicle into an overflow queue slot.
+        Updates both the highway's tracking dicts AND the ChargingArea's
+        priority queue/map so the area will serve this vehicle when a
+        charger becomes free.
+        """
+        import heapq
+        from ev_charge_manager.charging import QueueEntry
+
+        vehicle = self.vehicles[vehicle_id]
+
+        # Highway tracking
+        self.vehicles_in_queue[vehicle_id] = (area_id, timestamp)
+        vehicle.set_state(VehicleState.QUEUED, timestamp,
+                          f"emergency queued at {area_id} ({reason_label})")
+        vehicle.queue_entry_time = timestamp
+        vehicle.target_station_id = area_id
+        area.waiting_occupied += 1
+
+        # Insert into ChargingArea queue so it will be served when a charger is free
+        overflow_entry = QueueEntry(
+            priority=0.0,           # highest priority — stranded risk
+            entry_time=timestamp,
+            vehicle_id=vehicle_id,
+            queue_position=0,
+            energy_needed_kwh=energy_needed_kwh,
+            vehicle_soc=vehicle_soc,
+        )
+        heapq.heappush(area.queue, overflow_entry)
+        area.queue_map[vehicle_id] = overflow_entry
+
+        if self.tracker:
+            self.tracker.transition_to_queued(
+                vehicle_id, timestamp, area_id, f"emergency overflow queue ({reason_label})"
+            )
+
+        self._log_highway_event("QUEUE_EMERGENCY",
+                                f"Forced into overflow queue ({reason_label})",
+                                vehicle_id)
 
     def _update_queued_vehicles(self, timestamp: datetime) -> List[Dict]:
         """

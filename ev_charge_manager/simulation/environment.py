@@ -88,8 +88,8 @@ class Environment:
         self.config = config or SimulationConfig()
         self.id = str(uuid.uuid4())[:8]
 
-        # Initialize random state
-        if self.config.random_seed:
+        # Initialize random state (explicit None check: seed=0 is valid)
+        if self.config.random_seed is not None:
             random.seed(self.config.random_seed)
 
         # Time management
@@ -304,10 +304,6 @@ class Environment:
             track_history=self.config.track_vehicle_history
         )
         
-        while not vehicle.can_physically_reach(vehicle.position_km):
-            print(vehicle.position_km)
-            vehicle.position_km += 1
-
         return vehicle
 
     def _create_driver_by_type(self, behavior_type: str) -> DriverBehavior:

@@ -520,14 +520,15 @@ class Vehicle:
         old_speed = self.speed_kmh
         self.speed_kmh = max(0.0, self.speed_kmh + speed_change)
         
-        # Update position
-        distance_km = self.speed_kmh * dt_hours
+        # Update position using average of old and new speed (trapezoidal integration)
+        avg_speed = (old_speed + self.speed_kmh) / 2.0
+        distance_km = avg_speed * dt_hours
         old_position = self.position_km
         self.position_km += distance_km
         self.total_distance_km += distance_km
-        
-        # Calculate and apply energy consumption
-        consumption_rate = self.calculate_consumption_rate(self.speed_kmh)
+
+        # Calculate and apply energy consumption (use average speed for accuracy)
+        consumption_rate = self.calculate_consumption_rate(avg_speed)
         energy_consumed = consumption_rate * distance_km
         
         old_soc = self.battery.current_soc

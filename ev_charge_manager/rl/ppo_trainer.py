@@ -3,14 +3,16 @@ Multi-Agent PPO Trainer for Charging Area Optimization
 Uses Centralized Training with Decentralized Execution (CTDE)
 """
 
+import json
+import os
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.distributions import Normal
-import numpy as np
-from typing import Dict, List, Tuple, Optional
-import os
 from collections import deque
+from torch.distributions import Normal
+from typing import Dict, List, Optional, Tuple
 
 from ev_charge_manager.rl.environment import MultiAgentChargingEnv
 
@@ -156,24 +158,15 @@ class MultiAgentPPO:
         ]
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr)
         
-        # Training statistics - use lists instead of deque for slicing support
+        # Full unbounded training history (persisted to disk by train())
         self.episode_rewards: List[float] = []
         self.episode_costs: List[float] = []
         self.policy_losses: List[float] = []
         self.value_losses: List[float] = []
         self.entropy_losses: List[float] = []
-        
-        # Keep last N values for moving averages
-        self.max_history = 100
-        
+
         # Best model tracking
         self.best_avg_reward = float('-inf')
-    
-    def _add_to_history(self, value: float, history_list: List[float]):
-        """Add value to history list with max length."""
-        history_list.append(value)
-        if len(history_list) > self.max_history:
-            history_list.pop(0)
     
     def collect_trajectories(self, n_episodes: int) -> Dict:
         """
@@ -243,12 +236,11 @@ class MultiAgentPPO:
             
             # Track statistics
             total_reward = np.sum(episode_rewards)
-            self._add_to_history(total_reward, self.episode_rewards)
-            self._add_to_history(info.get('total_cost', 0), self.episode_costs)
+            self.episode_rewards.append(total_reward)
+            self.episode_costs.append(info.get('total_cost', 0))
             
             if (ep + 1) % 10 == 0:
-                recent_rewards = self.episode_rewards[-min(10, len(self.episode_rewards)):]
-                avg_reward = np.mean(recent_rewards)
+                avg_reward = np.mean(self.episode_rewards[-10:])
                 print(f"Episode {ep+1}/{n_episodes}, Avg Reward: {avg_reward:.2f}, "
                       f"Cost: {info.get('total_cost', 0):.0f}")
         
@@ -381,44 +373,89 @@ class MultiAgentPPO:
         n_epochs: int = 10,
         save_interval: int = 100,
         eval_interval: int = 50,
+        save_dir: Optional[str] = None,
     ):
         """
         Main training loop.
+
+        If *save_dir* is provided, a ``training_history.jsonl`` file is written
+        there — one JSON record per update — so training progress can be plotted
+        after (or during) the run.
         """
         print(f"\nStarting training for {total_episodes} episodes")
         print(f"Agents: {self.n_agents}, Device: {self.device}")
-        
+
+        history_path = None
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+            history_path = os.path.join(save_dir, "training_history.jsonl")
+            # Truncate any previous file from an earlier run
+            open(history_path, "w").close()
+
         for update_idx in range(0, total_episodes, episodes_per_update):
-            print(f"\n--- Update {update_idx // episodes_per_update + 1} ---")
+            update_num = update_idx // episodes_per_update + 1
+            episode_num = update_idx + episodes_per_update  # last episode in this batch
+            print(f"\n--- Update {update_num} ---")
             trajectories = self.collect_trajectories(episodes_per_update)
-            
+
             metrics = self.update(trajectories, n_epochs=n_epochs)
-            
-            # Calculate averages using list slicing
+
             recent_rewards = self.episode_rewards[-episodes_per_update:]
             recent_costs = self.episode_costs[-episodes_per_update:]
-            
+
             avg_reward = np.mean(recent_rewards) if recent_rewards else 0.0
             avg_cost = np.mean(recent_costs) if recent_costs else 0.0
-            
+
             print(f"Avg Reward: {avg_reward:.2f}, Avg Cost: {avg_cost:.0f}")
             print(f"Policy Loss: {metrics['policy_loss']:.4f}, "
                   f"Value Loss: {metrics['value_loss']:.4f}, "
                   f"Entropy: {metrics['entropy']:.4f}")
-            
+
             if avg_reward > self.best_avg_reward:
                 self.best_avg_reward = avg_reward
-                self.save("best_model.pt")
+                if save_dir:
+                    self.save(os.path.join(save_dir, "best_model.pt"))
+                else:
+                    self.save("best_model.pt")
                 print(f"New best model saved! Reward: {avg_reward:.2f}")
-            
-            if (update_idx // episodes_per_update + 1) % max(1, eval_interval // episodes_per_update) == 0:
-                self.evaluate()
-            
-            if (update_idx // episodes_per_update + 1) % max(1, save_interval // episodes_per_update) == 0:
-                self.save(f"checkpoint_{update_idx}.pt")
-        
+
+            # Periodic evaluation
+            do_eval = update_num % max(1, eval_interval // episodes_per_update) == 0
+            best_config = None
+            if do_eval:
+                eval_result = self.evaluate()
+                best_config = eval_result.get('best_config')
+
+            # Append one record to the history file
+            if history_path:
+                record = {
+                    "episode": episode_num,
+                    "update": update_num,
+                    "reward": float(avg_reward),
+                    "cost": float(avg_cost),
+                    "policy_loss": float(metrics['policy_loss']),
+                    "value_loss": float(metrics['value_loss']),
+                    "entropy": float(metrics['entropy']),
+                }
+                if best_config is not None:
+                    record["best_config"] = {
+                        "positions": [float(p) for p in best_config.get("positions", [])],
+                        "n_chargers": best_config.get("n_chargers", []),
+                        "n_waiting": best_config.get("n_waiting", []),
+                        "cost": float(best_config.get("cost", 0)),
+                        "grid_cost": float(best_config.get("grid_cost", 0)),
+                        "arbitrage_profit": float(best_config.get("arbitrage_profit", 0)),
+                    }
+                with open(history_path, "a") as fh:
+                    fh.write(json.dumps(record) + "\n")
+
+            if update_num % max(1, save_interval // episodes_per_update) == 0:
+                ckpt_name = f"checkpoint_{update_idx}.pt"
+                self.save(os.path.join(save_dir, ckpt_name) if save_dir else ckpt_name)
+
         print("\nTraining completed!")
-        self.save("final_model.pt")
+        final_name = "final_model.pt"
+        self.save(os.path.join(save_dir, final_name) if save_dir else final_name)
     
     def evaluate(self, n_episodes: int = 5) -> Dict:
         """

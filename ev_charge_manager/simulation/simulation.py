@@ -429,8 +429,8 @@ class Simulation:
 
     def _initialize(self) -> None:
         """Create and configure all simulation components."""
-        # Set random seed if provided
-        if self.params.random_seed:
+        # Set random seed if provided (explicit None check: seed=0 is valid)
+        if self.params.random_seed is not None:
             import random
             random.seed(self.params.random_seed)
             np.random.seed(self.params.random_seed)
@@ -1211,17 +1211,18 @@ class Simulation:
         es = self.params.early_stop
         conditions = []
 
-        if es.max_simulation_steps:
+        if es.max_simulation_steps is not None:
             conditions.append(f"max_steps={es.max_simulation_steps}")
-        if es.max_wall_clock_seconds:
+        if es.max_wall_clock_seconds is not None:
             conditions.append(f"max_time={es.max_wall_clock_seconds}s")
-        if es.max_consecutive_strandings < float('inf'):
+        # Sentinel values used by disabled()/lenient() presets
+        if es.max_consecutive_strandings < 999999:
             conditions.append(f"strandings>{es.max_consecutive_strandings}")
         if es.abandonment_rate_threshold < 1.0:
             conditions.append(f"abandonment>{es.abandonment_rate_threshold:.0%}")
-        if es.max_queue_occupancy < float('inf'):
+        if es.max_queue_occupancy < 999.0:
             conditions.append(f"queue>{es.max_queue_occupancy:.0%}")
-        if es.convergence_patience < float('inf'):
+        if es.convergence_patience > 0:
             conditions.append(f"convergence@{es.convergence_patience}")
 
         return ", ".join(conditions) if conditions else "disabled"

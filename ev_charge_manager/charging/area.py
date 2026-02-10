@@ -152,7 +152,10 @@ class QueueEntry:
     queue_position: int = field(compare=False, default=0)
     patience_score: float = field(compare=False, default=1.0)
     requested_power_preference: Optional[ChargerType] = field(compare=False, default=None)
-    
+    # Vehicle charging state at queue-join time — used when promoted to a charger
+    energy_needed_kwh: float = field(compare=False, default=50.0)
+    vehicle_soc: float = field(compare=False, default=0.5)
+
     def __post_init__(self):
         if not hasattr(self, '_initialized'):
             self._initialized = True
@@ -210,9 +213,6 @@ class ChargingArea:
         }
         
         self.current_time: Optional[datetime] = None
-
-        # Energy management (optional — None means unlimited power)
-        self.energy_manager: Optional[EnergyManager] = None
 
         # Cached available chargers (invalidated on status change)
         self._available_chargers_cache: Optional[List[Charger]] = None
@@ -325,16 +325,22 @@ class ChargingArea:
     # =========================================================================
     
     def request_entry(self, vehicle_id: str, priority_score: float = 1.0,
-                     power_preference: Optional[ChargerType] = None) -> Dict:
+                     power_preference: Optional[ChargerType] = None,
+                     energy_needed_kwh: float = 50.0,
+                     vehicle_soc: float = 0.5) -> Dict:
         """
         Vehicle requests to enter the charging area.
-        
+
+        Args:
+            energy_needed_kwh: Energy the vehicle needs (stored in QueueEntry for later use).
+            vehicle_soc: Vehicle's current SOC (stored in QueueEntry for later use).
+
         Returns:
-            Dict with 'granted', 'action' (immediate/queue/wait/denied), 
+            Dict with 'granted', 'action' (immediate/queue/wait/denied),
             and 'estimated_wait'
         """
         self.stats['total_arrivals'] += 1
-        
+
         # Check for immediate service
         available = self.get_available_chargers()
         if available and not self.queue:
@@ -346,11 +352,12 @@ class ChargingArea:
                 'assigned_charger': available[0].id,
                 'estimated_wait': 0.0
             }
-        
+
         # Check if can join queue
         if len(self.queue) < self.waiting_spots:
-            return self._join_queue(vehicle_id, priority_score, power_preference)
-        
+            return self._join_queue(vehicle_id, priority_score, power_preference,
+                                    energy_needed_kwh, vehicle_soc)
+
         # Waiting area full
         return {
             'granted': False,
@@ -360,14 +367,18 @@ class ChargingArea:
         }
     
     def _join_queue(self, vehicle_id: str, priority_score: float,
-                    power_preference: Optional[ChargerType]) -> Dict:
+                    power_preference: Optional[ChargerType],
+                    energy_needed_kwh: float = 50.0,
+                    vehicle_soc: float = 0.5) -> Dict:
         """Add vehicle to priority queue."""
         entry = QueueEntry(
             priority=priority_score,
             entry_time=self.current_time or datetime.now(),
             vehicle_id=vehicle_id,
             requested_power_preference=power_preference,
-            queue_position=len(self.queue) + 1
+            queue_position=len(self.queue) + 1,
+            energy_needed_kwh=energy_needed_kwh,
+            vehicle_soc=vehicle_soc,
         )
         
         heapq.heappush(self.queue, entry)
@@ -517,9 +528,11 @@ class ChargingArea:
         total_demand_kw = sum(c.power_kw for c in all_serviceable)
         
         # 3. Request energy from manager
+        # Convert minutes to hours: request_energy() expects duration_hours
+        duration_hours = time_step_minutes / 60.0
         available_kw = 0.0
         for c in all_serviceable:
-            available_kw += self.energy_manager.request_energy(c.power_kw, c.id, time_step_minutes)
+            available_kw += self.energy_manager.request_energy(c.power_kw, c.id, duration_hours)
 
         # 4. Allocate power: prioritize OCCUPIED chargers (most-complete first),
         #    then AVAILABLE chargers, powering down the rest.
@@ -639,11 +652,11 @@ class ChargingArea:
             if not next_entry:
                 break
             
-            # Get actual vehicle data - need highway reference
+            # Use the energy target and SOC recorded when the vehicle joined the queue
             result = self.start_charging(
                 next_entry.vehicle_id,
-                energy_needed_kwh=50.0,  # FIXME: Should come from vehicle
-                vehicle_soc=0.2  # FIXME: Should come from vehicle
+                energy_needed_kwh=next_entry.energy_needed_kwh,
+                vehicle_soc=next_entry.vehicle_soc,
             )
             if result:
                 events['new_assignments'].append({
