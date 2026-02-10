@@ -674,6 +674,8 @@ class MultiAgentChargingEnv(gym.Env):
         positions, configs, n_chargers_list, n_waiting_list, managers = self._decode_actions(actions)
         self.current_positions = np.array(positions)
         self.current_configs = list(configs)
+        self.current_n_chargers = list(n_chargers_list)
+        self.current_n_waiting = list(n_waiting_list)
         self.current_hierarchical_managers = managers
         
         for i, pos in enumerate(positions):
