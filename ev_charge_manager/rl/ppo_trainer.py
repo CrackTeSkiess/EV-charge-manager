@@ -584,8 +584,8 @@ class MultiAgentPPO:
     
     def load(self, path: str):
         """Load model checkpoint."""
-        checkpoint = torch.load(path, map_location=self.device)
-        
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+
         for i, actor in enumerate(self.actors):
             actor.load_state_dict(checkpoint['actors'][i])
         self.critic.load_state_dict(checkpoint['critic'])

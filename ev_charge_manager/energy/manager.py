@@ -82,8 +82,9 @@ class EnergySource:
     Tracks current state and availability.
     """
     
-    def __init__(self, config: EnergySourceConfig):
+    def __init__(self, config: EnergySourceConfig, weather_provider=None):
         self.config = config
+        self.weather_provider = weather_provider
         self.source_type = self._get_source_type()
         
         # Current state
@@ -115,34 +116,46 @@ class EnergySource:
         hour = timestamp.hour + timestamp.minute / 60.0
         
         if isinstance(self.config, SolarSourceConfig):
-            # Solar: parabolic curve during daylight
-            if self.config.sunrise_hour <= hour <= self.config.sunset_hour:
-                # Parabolic curve peaking at peak_hour
-                time_from_peak = abs(hour - self.config.peak_hour)
-                day_length = self.config.sunset_hour - self.config.sunrise_hour
-                peak_offset = abs(self.config.peak_hour - self.config.sunrise_hour)
-                
-                # Normalized parabolic curve
-                if time_from_peak <= peak_offset:
-                    availability = 1 - (time_from_peak / peak_offset) ** 2
+            if self.weather_provider is not None:
+                # Real data mode: use actual GHI from weather provider
+                self.available_power_kw = self.weather_provider.get_solar_output_kw(
+                    timestamp, self.config.peak_power_kw
+                )
+            else:
+                # Synthetic mode: parabolic curve during daylight
+                if self.config.sunrise_hour <= hour <= self.config.sunset_hour:
+                    # Parabolic curve peaking at peak_hour
+                    time_from_peak = abs(hour - self.config.peak_hour)
+                    day_length = self.config.sunset_hour - self.config.sunrise_hour
+                    peak_offset = abs(self.config.peak_hour - self.config.sunrise_hour)
+
+                    # Normalized parabolic curve
+                    if time_from_peak <= peak_offset:
+                        availability = 1 - (time_from_peak / peak_offset) ** 2
+                    else:
+                        availability = 0
                 else:
                     availability = 0
-            else:
-                availability = 0
-            
-            self.available_power_kw = self.config.peak_power_kw * availability * weather_factor
+
+                self.available_power_kw = self.config.peak_power_kw * availability * weather_factor
             
         elif isinstance(self.config, WindSourceConfig):
-            # Wind: variable but can be day or night
-            base = (self.config.min_power_kw + self.config.max_power_kw) / 2
-            variation = (self.config.max_power_kw - self.config.min_power_kw) / 2
-            
-            # Daily pattern + random noise
-            daily_factor = 0.5 + 0.5 * math.sin(2 * math.pi * hour / 24)
-            noise = random.uniform(-self.config.variability, self.config.variability)
-            
-            power = base + variation * (daily_factor + noise)
-            self.available_power_kw = float(np.clip(power, self.config.min_power_kw, self.config.max_power_kw))
+            if self.weather_provider is not None:
+                # Real data mode: use actual wind speed from weather provider
+                self.available_power_kw = self.weather_provider.get_wind_output_kw(
+                    timestamp, self.config.base_power_kw
+                )
+            else:
+                # Synthetic mode: variable but can be day or night
+                base = (self.config.min_power_kw + self.config.max_power_kw) / 2
+                variation = (self.config.max_power_kw - self.config.min_power_kw) / 2
+
+                # Daily pattern + random noise
+                daily_factor = 0.5 + 0.5 * math.sin(2 * math.pi * hour / 24)
+                noise = random.uniform(-self.config.variability, self.config.variability)
+
+                power = base + variation * (daily_factor + noise)
+                self.available_power_kw = float(np.clip(power, self.config.min_power_kw, self.config.max_power_kw))
             
         elif isinstance(self.config, GridSourceConfig):
             # Grid: always available at max power

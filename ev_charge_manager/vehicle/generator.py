@@ -107,10 +107,12 @@ class VehicleGenerator:
     def __init__(
         self,
         environment: Environment,
-        config: Optional[GeneratorConfig] = None
+        config: Optional[GeneratorConfig] = None,
+        hourly_rate_override=None,
     ):
         self.env = environment
         self.config = config or GeneratorConfig()
+        self.hourly_rate_override = hourly_rate_override
         
         # Initialize random state
         if self.config.random_seed:
@@ -148,7 +150,11 @@ class VehicleGenerator:
         """
         self.hourly_generated = 0
         minutes = 60
-        target = self.hourly_target
+        # Use external rate override if provided (e.g., real traffic data)
+        if self.hourly_rate_override is not None:
+            target = self.hourly_rate_override(self.env.current_time)
+        else:
+            target = self.hourly_target
         
         if self.config.distribution_type == TemporalDistribution.UNIFORM:
             # Even distribution: target/60 per minute with rounding
