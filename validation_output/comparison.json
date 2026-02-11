@@ -1,0 +1,69 @@
+{
+  "rl_annual": {
+    "total_grid_cost": 6078.790632118606,
+    "total_grid_energy_mwh": 35.54350537553489,
+    "total_renewable_energy_mwh": 3.2214486458246046,
+    "renewable_used_mwh": 3.2184161057959804,
+    "renewable_fraction": 0.07694612162862105,
+    "total_demand_mwh": 41.82687882996368,
+    "demand_shortfall_hours": 0,
+    "avg_battery_soc": 0.2774941111153166,
+    "peak_grid_draw_kw": 169.05533689687402,
+    "total_curtailed_mwh": 0.0030325400286246146,
+    "arbitrage_profit": 18062.382486821818
+  },
+  "baseline_annual": {
+    "total_grid_cost": 5595.387136133584,
+    "total_grid_energy_mwh": 34.01102670121848,
+    "total_renewable_energy_mwh": 3.2214486458246046,
+    "renewable_used_mwh": 3.2184161057959804,
+    "renewable_fraction": 0.07694612162862105,
+    "total_demand_mwh": 41.82687882996368,
+    "demand_shortfall_hours": 0,
+    "avg_battery_soc": 0.47660849749340184,
+    "peak_grid_draw_kw": 169.05533689687402,
+    "total_curtailed_mwh": 0.0030325400286246146,
+    "arbitrage_profit": 416.6483222627808
+  },
+  "rl_quarterly": {
+    "Q1": {
+      "grid_cost": 6078.790632118606,
+      "renewable_fraction": 0.07694612162862105,
+      "avg_battery_soc": 0.2774941111153166,
+      "arbitrage_profit": 18062.382486821818
+    }
+  },
+  "baseline_quarterly": {
+    "Q1": {
+      "grid_cost": 5595.387136133584,
+      "renewable_fraction": 0.07694612162862105,
+      "avg_battery_soc": 0.47660849749340184,
+      "arbitrage_profit": 416.6483222627808
+    }
+  },
+  "delta": {
+    "total_grid_cost": 483.40349598502144,
+    "total_grid_energy_mwh": 1.5324786743164083,
+    "total_renewable_energy_mwh": 0.0,
+    "renewable_used_mwh": 0.0,
+    "renewable_fraction": 0.0,
+    "total_demand_mwh": 0.0,
+    "demand_shortfall_hours": 0,
+    "avg_battery_soc": -0.19911438637808526,
+    "peak_grid_draw_kw": 0.0,
+    "total_curtailed_mwh": 0.0,
+    "arbitrage_profit": 17645.73416455904
+  },
+  "delta_pct": {
+    "total_grid_cost": 8.639321716692754,
+    "total_grid_energy_mwh": 4.505828911837894,
+    "total_renewable_energy_mwh": 0.0,
+    "renewable_used_mwh": 0.0,
+    "renewable_fraction": 0.0,
+    "total_demand_mwh": 0.0,
+    "avg_battery_soc": -41.777347115142824,
+    "peak_grid_draw_kw": 0.0,
+    "total_curtailed_mwh": 0.0,
+    "arbitrage_profit": 4235.162659176591
+  }
+}
