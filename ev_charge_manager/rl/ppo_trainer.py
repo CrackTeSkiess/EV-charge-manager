@@ -170,6 +170,12 @@ class MultiAgentPPO:
         self.value_losses: List[float] = []
         self.entropy_losses: List[float] = []
 
+        # Per-episode operational metrics (charging / queuing / stranding)
+        self.episode_stranded: List[float] = []
+        self.episode_shortage_events: List[int] = []
+        self.episode_charging_demand_kwh: List[float] = []
+        self.episode_renewable_fraction: List[float] = []
+
         # Best model tracking
         self.best_avg_reward = float('-inf')
     
@@ -243,6 +249,16 @@ class MultiAgentPPO:
             total_reward = np.sum(episode_rewards)
             self.episode_rewards.append(total_reward)
             self.episode_costs.append(info.get('total_cost', 0))
+
+            # Operational metrics from the environment info dict
+            self.episode_stranded.append(float(info.get('stranded_vehicles', 0)))
+            self.episode_shortage_events.append(int(info.get('shortage_events', 0)))
+            self.episode_charging_demand_kwh.append(
+                float(info.get('total_demand_kwh', info.get('charging_demand_kwh', 0)))
+            )
+            self.episode_renewable_fraction.append(
+                float(info.get('renewable_fraction', 0))
+            )
             
             if (ep + 1) % 10 == 0:
                 avg_reward = np.mean(self.episode_rewards[-10:])
@@ -444,6 +460,17 @@ class MultiAgentPPO:
                 best_config = eval_result.get('best_config')
                 current_config = eval_result.get('current_config')
 
+            # Compute recent operational metric averages
+            recent_stranded = self.episode_stranded[-episodes_per_update:]
+            recent_shortage = self.episode_shortage_events[-episodes_per_update:]
+            recent_demand = self.episode_charging_demand_kwh[-episodes_per_update:]
+            recent_renewable = self.episode_renewable_fraction[-episodes_per_update:]
+
+            avg_stranded = float(np.mean(recent_stranded)) if recent_stranded else 0.0
+            avg_shortage = float(np.mean(recent_shortage)) if recent_shortage else 0.0
+            avg_demand = float(np.mean(recent_demand)) if recent_demand else 0.0
+            avg_renewable = float(np.mean(recent_renewable)) if recent_renewable else 0.0
+
             # Append one record to the history file
             if history_path:
                 record = {
@@ -455,6 +482,10 @@ class MultiAgentPPO:
                     "value_loss": float(metrics['value_loss']),
                     "entropy": float(metrics['entropy']),
                     "entropy_coef": float(self.entropy_coef),
+                    "stranded_vehicles": avg_stranded,
+                    "shortage_events": avg_shortage,
+                    "charging_demand_kwh": avg_demand,
+                    "renewable_fraction": avg_renewable,
                 }
                 if best_config is not None:
                     record["best_config"] = {
