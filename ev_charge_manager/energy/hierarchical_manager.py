@@ -40,11 +40,13 @@ class HierarchicalEnergyManager:
         pricing_schedule: Optional[GridPricingSchedule] = None,
         enable_rl_agent: bool = True,
         device: str = "cpu",
+        weather_provider=None,
     ):
         self.id = manager_id
         self.config = config
         self.pricing = pricing_schedule or GridPricingSchedule()
         self.enable_rl_agent = enable_rl_agent
+        self.weather_provider = weather_provider
         
         # Extract battery parameters from config
         battery_configs = [
@@ -103,42 +105,61 @@ class HierarchicalEnergyManager:
     
     def _calculate_solar_output(self, timestamp: datetime) -> float:
         """Calculate current solar output based on time of day."""
+        if self.weather_provider is not None:
+            # Real data mode: use actual GHI from weather provider per source
+            total_output = 0.0
+            for solar in self.solar_sources:
+                total_output += self.weather_provider.get_solar_output_kw(
+                    timestamp, solar.peak_power_kw
+                )
+            return total_output
+
+        # Synthetic mode: parabolic curve
         hour = timestamp.hour + timestamp.minute / 60.0
         total_output = 0.0
-        
+
         for solar in self.solar_sources:
             if solar.sunrise_hour <= hour <= solar.sunset_hour:
                 # Parabolic curve
                 time_from_peak = abs(hour - solar.peak_hour)
                 peak_offset = abs(solar.peak_hour - solar.sunrise_hour)
-                
+
                 if time_from_peak <= peak_offset:
                     availability = 1 - (time_from_peak / peak_offset) ** 2
                 else:
                     availability = 0
-                
+
                 # Add some randomness
                 availability *= np.random.uniform(0.9, 1.0)
                 total_output += solar.peak_power_kw * availability
-        
+
         return total_output
     
     def _calculate_wind_output(self, timestamp: datetime) -> float:
         """Calculate current wind output with variability."""
+        if self.weather_provider is not None:
+            # Real data mode: use actual wind speed from weather provider per source
+            total_output = 0.0
+            for wind in self.wind_sources:
+                total_output += self.weather_provider.get_wind_output_kw(
+                    timestamp, wind.base_power_kw
+                )
+            return total_output
+
+        # Synthetic mode: daily pattern + noise
         import math
         import random
-        
+
         hour = timestamp.hour
         total_output = 0.0
-        
+
         for wind in self.wind_sources:
-            # Daily pattern + noise
             daily_factor = 0.5 + 0.5 * math.sin(2 * math.pi * hour / 24)
             noise = random.uniform(-wind.variability, wind.variability)
-            
+
             power = wind.base_power_kw + (wind.max_power_kw - wind.min_power_kw) * 0.5 * (daily_factor + noise)
             total_output += float(np.clip(power, wind.min_power_kw, wind.max_power_kw))
-        
+
         return total_output
     
     def step(

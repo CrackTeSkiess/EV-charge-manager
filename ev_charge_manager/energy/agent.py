@@ -522,7 +522,7 @@ class EnergyManagerAgent:
     
     def load(self, path: str):
         """Load agent checkpoint."""
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         self.network.load_state_dict(checkpoint['network'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.cumulative_grid_cost = checkpoint.get('cumulative_cost', 0.0)
