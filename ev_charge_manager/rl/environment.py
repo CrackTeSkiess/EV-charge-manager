@@ -28,6 +28,10 @@ from ev_charge_manager.energy import (
 from ev_charge_manager.energy import HierarchicalEnergyManager, GridPricingSchedule
 from ev_charge_manager.highway import Highway
 from ev_charge_manager.charging import ChargingArea
+from ev_charge_manager.data.traffic_profiles import (
+    WEEKDAY_HOURLY_FRACTIONS,
+    PEAK_HOURLY_FRACTION,
+)
 
 
 @dataclass
@@ -412,18 +416,17 @@ class MultiAgentChargingEnv(gym.Env):
                     ps.shoulder_price = max(0.03, self.cost_params.grid_shoulder_price * (1 + noise))
                     ps.off_peak_price = max(0.01, self.cost_params.grid_offpeak_price * (1 + noise))
 
-            # Calculate traffic-based demand for each station
-            # Peak traffic around hours 8-9 and 17-18
-            traffic_factor = 1.0
-            if 7 <= hour <= 9 or 17 <= hour <= 19:
-                traffic_factor = 1.5
+            # Calculate traffic-based demand for each station.
+            # Uses the BASt weekday hourly profile so the agent trains on the
+            # same demand shape that SUMO produces during validation.
+            hourly_shape = WEEKDAY_HOURLY_FRACTIONS[hour] / PEAK_HOURLY_FRACTION
 
             for i, manager in enumerate(managers):
                 # Demand = n_chargers × effective_power × occupancy × noise
-                # occupancy is driven by traffic volume and peak-hour multiplier,
-                # normalised by the max traffic so that max traffic ≈ full occupancy.
+                # hourly_shape ∈ [0.1, 1.0]: time-of-day curve from BASt data
+                # traffic ratio: episode-level traffic volume / max traffic
                 effective_power = CHARGER_RATED_POWER_KW * CHARGER_AVG_DRAW_FACTOR
-                occupancy = min(1.5, traffic_factor * (self.current_traffic / self.traffic_range[1]))
+                occupancy = min(1.5, hourly_shape * (self.current_traffic / self.traffic_range[1]))
                 demand_noise = random.uniform(0.8, 1.2)
                 demand_kw = n_chargers_list[i] * effective_power * occupancy * demand_noise
                 

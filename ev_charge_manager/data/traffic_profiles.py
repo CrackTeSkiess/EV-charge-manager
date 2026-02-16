@@ -122,6 +122,19 @@ DAY_OF_WEEK_MULTIPLIERS = {
     6: 0.70,  # Sunday
 }
 
+# ---------------------------------------------------------------------------
+# Shared constants used by training (environment.py), SUMO (network_generator)
+# and real-world validation (validate_real_world.py).
+# ---------------------------------------------------------------------------
+
+# Fraction of EVs on the highway that stop to charge at the corridor's
+# stations.  Must be the same everywhere so demand magnitudes match.
+EV_CHARGING_STOP_FRACTION: float = 0.20
+
+# Peak hourly fraction across the weekday profile — used to normalise the
+# time-of-day curve to [0, 1] so that the peak hour gives occupancy ≈ 1.
+PEAK_HOURLY_FRACTION: float = max(WEEKDAY_HOURLY_FRACTIONS)
+
 
 def generate_autobahn_traffic_profile(
     base_aadt: float = 50000.0,
@@ -174,8 +187,7 @@ def generate_autobahn_traffic_profile(
             hourly_total = daily_total * hourly_fracs[hour]
             # EV fraction of total traffic
             ev_vehicles = hourly_total * ev_penetration
-            # Not all EVs need to charge; ~20% stop at any given station corridor
-            ev_charging = ev_vehicles * 0.20
+            ev_charging = ev_vehicles * EV_CHARGING_STOP_FRACTION
 
             rows.append({
                 "month": month,

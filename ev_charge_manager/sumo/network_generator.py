@@ -17,6 +17,7 @@ from typing import Dict, List, Optional
 
 from ev_charge_manager.energy.manager import CHARGER_RATED_POWER_KW
 from ev_charge_manager.data.traffic_profiles import (
+    EV_CHARGING_STOP_FRACTION,
     WEEKDAY_HOURLY_FRACTIONS,
     SATURDAY_HOURLY_FRACTIONS,
     SUNDAY_HOURLY_FRACTIONS,
@@ -472,9 +473,11 @@ class SUMONetworkGenerator:
             if hourly_evs < 0.5:
                 continue
 
-            # Split traffic: ~70% through-traffic (no stop), ~30% needs charging
-            through_rate = hourly_evs * 0.70
-            charging_rate = hourly_evs * 0.30
+            # Split traffic: through-traffic vs vehicles that need charging.
+            # Uses the shared EV_CHARGING_STOP_FRACTION so SUMO, training, and
+            # real-world validation all assume the same stopping ratio.
+            charging_rate = hourly_evs * EV_CHARGING_STOP_FRACTION
+            through_rate = hourly_evs - charging_rate
 
             # Through-traffic flow (distributed across EV types)
             for ev in EV_TYPES:

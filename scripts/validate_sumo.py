@@ -49,6 +49,10 @@ from ev_charge_manager.energy.manager import (
     WindSourceConfig,
     BatteryStorageConfig,
 )
+from ev_charge_manager.data.traffic_profiles import (
+    WEEKDAY_HOURLY_FRACTIONS,
+    PEAK_HOURLY_FRACTION,
+)
 from ev_charge_manager.energy.agent import GridPricingSchedule
 from ev_charge_manager.energy.hierarchical_manager import HierarchicalEnergyManager
 
@@ -288,14 +292,14 @@ def run_internal_simulation(
         for hour in range(24):
             timestamp = base_date + timedelta(days=day, hours=hour)
 
-            # Traffic factor (matching environment.py logic)
-            traffic_factor = 1.5 if (7 <= hour <= 9 or 17 <= hour <= 19) else 1.0
+            # BASt hourly shape (matching environment.py training logic)
+            hourly_shape = WEEKDAY_HOURLY_FRACTIONS[hour] / PEAK_HOURLY_FRACTION
 
             for i, manager in enumerate(managers):
                 # Must match the training formula in environment.py
                 effective_power = CHARGER_RATED_POWER_KW * CHARGER_AVG_DRAW_FACTOR
                 traffic_max = run_config.get("traffic_max", 80.0)
-                occupancy = min(1.5, traffic_factor * (base_traffic / traffic_max))
+                occupancy = min(1.5, hourly_shape * (base_traffic / traffic_max))
                 demand_noise = random.uniform(0.8, 1.2)
                 demand_kw = n_chargers[i] * effective_power * occupancy * demand_noise
 
