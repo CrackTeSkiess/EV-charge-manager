@@ -30,6 +30,8 @@ sys.path.insert(0, str(project_root))
 import torch
 
 from ev_charge_manager.energy.manager import (
+    CHARGER_RATED_POWER_KW,
+    CHARGER_AVG_DRAW_FACTOR,
     EnergyManagerConfig,
     GridSourceConfig,
     SolarSourceConfig,
@@ -262,6 +264,7 @@ def run_year(
     weather_provider: RealWeatherProvider,
     traffic_provider: RealTrafficProvider,
     n_chargers: List[int],
+    run_config: Dict,
     n_days: int = 365,
     label: str = "agent",
 ) -> Dict:
@@ -285,10 +288,12 @@ def run_year(
             timestamp = date.replace(hour=hour, minute=0, second=0)
 
             for i, manager in enumerate(managers):
-                # Get traffic-based demand
+                # Get traffic-based demand using shared charger power constant
                 traffic_rate = traffic_provider.get_vehicles_per_hour(timestamp)
-                # Demand: each charging EV draws ~50kW on average
-                demand_kw = n_chargers[i] * 50.0 * (traffic_rate / 60.0)
+                effective_power = CHARGER_RATED_POWER_KW * CHARGER_AVG_DRAW_FACTOR
+                traffic_max = run_config.get("traffic_max", 80.0)
+                occupancy = min(1.0, traffic_rate / traffic_max)
+                demand_kw = n_chargers[i] * effective_power * occupancy
                 demand_kw *= random.uniform(0.9, 1.1)  # Light noise
                 demand_kw = max(10.0, demand_kw)  # Minimum load
 
@@ -586,7 +591,7 @@ def main():
     np.random.seed(args.seed)
     rl_results = run_year(
         rl_managers, weather_provider, traffic_provider,
-        infra["n_chargers"], n_days=n_days, label="RL"
+        infra["n_chargers"], run_config=run_config, n_days=n_days, label="RL"
     )
 
     print(f"\n--- Rule-Based Baseline ({n_days} days) ---")
@@ -594,7 +599,7 @@ def main():
     np.random.seed(args.seed)
     baseline_results = run_year(
         baseline_managers, weather_provider, traffic_provider,
-        infra["n_chargers"], n_days=n_days, label="Baseline"
+        infra["n_chargers"], run_config=run_config, n_days=n_days, label="Baseline"
     )
 
     # --- Compare ---

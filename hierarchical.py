@@ -37,6 +37,7 @@ from ev_charge_manager.rl.hierarchical_trainer import (
     TrainingMode,
 )
 from ev_charge_manager.energy import GridPricingSchedule
+from ev_charge_manager.energy.manager import CHARGER_RATED_POWER_KW, CHARGER_AVG_DRAW_FACTOR
 
 
 # ---------------------------------------------------------------------------
@@ -343,9 +344,11 @@ def main() -> None:
     _banner(args)
     os.makedirs(args.save_dir, exist_ok=True)
 
-    # Persist run configuration
+    # Persist run configuration (includes charger power for validation reproducibility)
     run_cfg = vars(args).copy()
     run_cfg["timestamp"] = datetime.now().isoformat()
+    run_cfg["charger_rated_power_kw"] = CHARGER_RATED_POWER_KW
+    run_cfg["charger_avg_draw_factor"] = CHARGER_AVG_DRAW_FACTOR
     with open(os.path.join(args.save_dir, "run_config.json"), "w") as fh:
         json.dump(run_cfg, fh, indent=2)
 

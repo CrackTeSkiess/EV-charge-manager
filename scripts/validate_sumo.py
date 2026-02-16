@@ -41,6 +41,8 @@ from ev_charge_manager.sumo import require_sumo, SUMO_AVAILABLE
 from ev_charge_manager.sumo.network_generator import SUMONetworkGenerator
 from ev_charge_manager.sumo.traci_bridge import TraCIBridge
 from ev_charge_manager.energy.manager import (
+    CHARGER_RATED_POWER_KW,
+    CHARGER_AVG_DRAW_FACTOR,
     EnergyManagerConfig,
     GridSourceConfig,
     SolarSourceConfig,
@@ -290,9 +292,12 @@ def run_internal_simulation(
             traffic_factor = 1.5 if (7 <= hour <= 9 or 17 <= hour <= 19) else 1.0
 
             for i, manager in enumerate(managers):
-                base_demand = n_chargers[i] * 50.0 * traffic_factor
+                # Must match the training formula in environment.py
+                effective_power = CHARGER_RATED_POWER_KW * CHARGER_AVG_DRAW_FACTOR
+                traffic_max = run_config.get("traffic_max", 80.0)
+                occupancy = min(1.5, traffic_factor * (base_traffic / traffic_max))
                 demand_noise = random.uniform(0.8, 1.2)
-                demand_kw = base_demand * demand_noise * (base_traffic / 60.0)
+                demand_kw = n_chargers[i] * effective_power * occupancy * demand_noise
 
                 result = manager.step(
                     timestamp=timestamp,

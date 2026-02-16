@@ -16,7 +16,9 @@ from datetime import datetime, timedelta
 
 from ev_charge_manager.simulation import Simulation, SimulationParameters
 from ev_charge_manager.energy import (
-    EnergyManagerConfig, 
+    CHARGER_RATED_POWER_KW,
+    CHARGER_AVG_DRAW_FACTOR,
+    EnergyManagerConfig,
     EnergySourceConfig,
     GridSourceConfig,
     SolarSourceConfig,
@@ -74,8 +76,8 @@ class CostParameters:
     blackout_penalty: float = 50000.0
     energy_cost_weight: float = 1.0
     
-    # Micro-RL agent costs
-    grid_peak_price: float = 0.35
+    # Micro-RL agent costs (defaults must match CLI defaults in hierarchical.py)
+    grid_peak_price: float = 0.25
     grid_shoulder_price: float = 0.15
     grid_offpeak_price: float = 0.08
 
@@ -417,10 +419,13 @@ class MultiAgentChargingEnv(gym.Env):
                 traffic_factor = 1.5
 
             for i, manager in enumerate(managers):
-                # Base demand varies by traffic and station size
-                base_demand = n_chargers_list[i] * 50 * traffic_factor  # 50kW per charger
+                # Demand = n_chargers × effective_power × occupancy × noise
+                # occupancy is driven by traffic volume and peak-hour multiplier,
+                # normalised by the max traffic so that max traffic ≈ full occupancy.
+                effective_power = CHARGER_RATED_POWER_KW * CHARGER_AVG_DRAW_FACTOR
+                occupancy = min(1.5, traffic_factor * (self.current_traffic / self.traffic_range[1]))
                 demand_noise = random.uniform(0.8, 1.2)
-                demand_kw = base_demand * demand_noise * (self.current_traffic / 60.0)
+                demand_kw = n_chargers_list[i] * effective_power * occupancy * demand_noise
                 
                 # Run micro-RL step
                 result = manager.step(

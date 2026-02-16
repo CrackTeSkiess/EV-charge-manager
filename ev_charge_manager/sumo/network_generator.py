@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from ev_charge_manager.energy.manager import CHARGER_RATED_POWER_KW
 from ev_charge_manager.data.traffic_profiles import (
     WEEKDAY_HOURLY_FRACTIONS,
     SATURDAY_HOURLY_FRACTIONS,
@@ -551,8 +552,7 @@ class SUMONetworkGenerator:
                           friendlyPos="true")
 
             # Charging station overlaid on same edge
-            # Power per charger: 150 kW = 150000 W
-            charger_power_w = 150000.0 * self.n_chargers[idx]
+            charger_power_w = CHARGER_RATED_POWER_KW * 1000.0 * self.n_chargers[idx]
             ET.SubElement(root, "chargingStation",
                           id=f"cs_{sid}",
                           lane=f"{charging_edge}_0",

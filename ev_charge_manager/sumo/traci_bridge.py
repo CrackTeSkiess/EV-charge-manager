@@ -13,6 +13,11 @@ import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+from ev_charge_manager.energy.manager import (
+    CHARGER_RATED_POWER_KW,
+    CHARGER_AVG_DRAW_FACTOR,
+)
+
 # Ensure traci is importable via SUMO_HOME
 _sumo_home = os.environ.get("SUMO_HOME")
 if _sumo_home:
@@ -75,8 +80,10 @@ class TraCIBridge:
         bridge.close()
     """
 
-    # Default charger power used when calculating demand from vehicle count
-    DEFAULT_CHARGER_POWER_KW = 150.0
+    # Effective per-vehicle power drawn during active charging.
+    # Uses the shared constants from ev_charge_manager.energy.manager so
+    # that training and SUMO validation see the same charger power.
+    EFFECTIVE_CHARGER_POWER_KW = CHARGER_RATED_POWER_KW * CHARGER_AVG_DRAW_FACTOR
 
     def __init__(
         self,
@@ -246,9 +253,9 @@ class TraCIBridge:
         n_charging = min(cs_vehicle_count, max_chargers)
         n_cs_waiting = max(0, cs_vehicle_count - max_chargers)
 
-        # Average power per charging vehicle (SOC-weighted estimate)
-        avg_power_kw = self.DEFAULT_CHARGER_POWER_KW * 0.85  # ~85% avg
-        total_power_kw = n_charging * avg_power_kw
+        # Average power per charging vehicle — uses the same effective
+        # charger power that the training environment uses.
+        total_power_kw = n_charging * self.EFFECTIVE_CHARGER_POWER_KW
 
         # Minimum station load (base load from lighting, HVAC, etc.)
         demand_kw = max(10.0, total_power_kw)

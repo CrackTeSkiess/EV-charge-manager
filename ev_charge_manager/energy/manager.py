@@ -18,6 +18,24 @@ import numpy as np
 # HierarchicalEnergyManager is imported lazily inside _create_hierarchical_manager
 # to avoid a circular import (HierarchicalEnergyManager imports from this module).
 
+# ---------------------------------------------------------------------------
+# Shared charger infrastructure constants
+# ---------------------------------------------------------------------------
+# These must be used consistently across training (environment.py), SUMO
+# validation (traci_bridge.py, network_generator.py) and internal comparison
+# (validate_sumo.py, validate_real_world.py) so that demand magnitudes
+# seen during training match those encountered at validation time.
+CHARGER_RATED_POWER_KW: float = 150.0
+"""DC fast charger rated power (kW).  Typical Level-3 highway charger."""
+
+CHARGER_AVG_DRAW_FACTOR: float = 0.85
+"""Average fraction of rated power actually drawn by a vehicle.
+
+Accounts for tapering at high SOC, connector losses, and vehicles that
+are nearly full.  effective_power = CHARGER_RATED_POWER_KW * CHARGER_AVG_DRAW_FACTOR
+"""
+
+
 class EnergySourceType(Enum):
     """Types of energy sources available."""
     GRID = auto()
