@@ -419,7 +419,7 @@ class MultiAgentChargingEnv(gym.Env):
             # Calculate traffic-based demand for each station.
             # Uses the BASt weekday hourly profile so the agent trains on the
             # same demand shape that SUMO produces during validation.
-            hourly_shape = WEEKDAY_HOURLY_FRACTIONS[hour] / PEAK_HOURLY_FRACTION
+            hourly_shape = WEEKDAY_HOURLY_FRACTIONS[hour % 24] / PEAK_HOURLY_FRACTION
 
             for i, manager in enumerate(managers):
                 # Demand = n_chargers × effective_power × occupancy × noise
