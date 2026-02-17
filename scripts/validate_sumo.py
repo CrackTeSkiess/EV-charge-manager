@@ -572,8 +572,12 @@ def parse_args() -> argparse.Namespace:
         help="Skip generating plots",
     )
     parser.add_argument(
-        "--compare-internal", action="store_true",
-        help="Also run the internal simulation for side-by-side comparison",
+        "--compare-internal", action="store_true", default=True,
+        help="Run the internal simulation for side-by-side comparison (default: True)",
+    )
+    parser.add_argument(
+        "--no-compare-internal", action="store_true",
+        help="Skip internal simulation comparison",
     )
     return parser.parse_args()
 
@@ -688,7 +692,7 @@ def main() -> None:
     internal_hourly = None
     internal_metrics = None
 
-    if args.compare_internal:
+    if args.compare_internal and not args.no_compare_internal:
         print(f"\n--- Running internal simulation for comparison ---")
         random.seed(args.seed)
         np.random.seed(args.seed)
@@ -773,85 +777,269 @@ def _generate_plots(
     internal_hourly: Optional[pd.DataFrame],
     output_dir: str,
 ) -> None:
-    """Generate validation comparison plots."""
+    """Generate comprehensive SUMO vs Internal comparison plots."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.gridspec import GridSpec
 
     plots_dir = os.path.join(output_dir, "plots")
     os.makedirs(plots_dir, exist_ok=True)
 
-    # --- Plot 1: Hourly demand profile ---
+    has_internal = internal_hourly is not None and not internal_hourly.empty
+
+    # Colour palette
+    C_SUMO = "#1f77b4"
+    C_INT = "#d62728"
+    C_SOLAR = "#f4a261"
+    C_WIND = "#2a9d8f"
+    C_GRID = "#6c757d"
+
+    # Pre-aggregate by hour (mean across stations and days)
+    sumo_by_hour = sumo_hourly.groupby("hour").mean(numeric_only=True)
+    int_by_hour = (
+        internal_hourly.groupby("hour").mean(numeric_only=True)
+        if has_internal else None
+    )
+
+    # =====================================================================
+    # Figure 1: Comparison Dashboard (main deliverable)
+    # =====================================================================
+    if has_internal:
+        fig = plt.figure(figsize=(20, 16))
+        fig.suptitle(
+            "SUMO vs Internal Simulation — Validation Dashboard",
+            fontsize=16, fontweight="bold", y=0.98,
+        )
+        gs = GridSpec(3, 3, figure=fig, hspace=0.35, wspace=0.30)
+
+        # --- Panel 1: Demand overlay (top-left, spans 2 cols) ---
+        ax1 = fig.add_subplot(gs[0, :2])
+        ax1.plot(sumo_by_hour.index, sumo_by_hour["demand_kw"],
+                 color=C_SUMO, marker="o", ms=5, lw=2, label="SUMO")
+        ax1.plot(int_by_hour.index, int_by_hour["demand_kw"],
+                 color=C_INT, marker="s", ms=5, lw=2, ls="--", label="Internal")
+        ax1.fill_between(
+            sumo_by_hour.index,
+            sumo_by_hour["demand_kw"], int_by_hour["demand_kw"],
+            alpha=0.12, color="grey", label="Gap",
+        )
+        ax1.set_xlabel("Hour of Day")
+        ax1.set_ylabel("Mean Demand (kW)")
+        ax1.set_title("Hourly Charging Demand")
+        ax1.legend(loc="upper left")
+        ax1.grid(True, alpha=0.3)
+        ax1.set_xlim(-0.5, 23.5)
+        ax1.set_xticks(range(24))
+
+        # --- Panel 2: Summary metrics bar chart (top-right) ---
+        ax2 = fig.add_subplot(gs[0, 2])
+        sumo_m = compute_metrics(sumo_hourly)
+        int_m = compute_metrics(internal_hourly)
+        metric_keys = [
+            ("total_grid_cost", "Grid Cost ($)"),
+            ("total_demand_kwh", "Demand (kWh)"),
+            ("total_renewable_kwh", "Renewable (kWh)"),
+            ("peak_grid_draw_kw", "Peak Grid (kW)"),
+        ]
+        labels = [lbl for _, lbl in metric_keys]
+        sumo_vals = [sumo_m.get(k, 0) for k, _ in metric_keys]
+        int_vals = [int_m.get(k, 0) for k, _ in metric_keys]
+        x_pos = np.arange(len(labels))
+        bar_w = 0.35
+        ax2.barh(x_pos - bar_w / 2, sumo_vals, bar_w,
+                 color=C_SUMO, label="SUMO", alpha=0.85)
+        ax2.barh(x_pos + bar_w / 2, int_vals, bar_w,
+                 color=C_INT, label="Internal", alpha=0.85)
+        ax2.set_yticks(x_pos)
+        ax2.set_yticklabels(labels, fontsize=9)
+        ax2.set_title("Key Metrics Comparison")
+        ax2.legend(loc="lower right", fontsize=8)
+        ax2.grid(True, axis="x", alpha=0.3)
+
+        # --- Panel 3: Grid power overlay (mid-left) ---
+        ax3 = fig.add_subplot(gs[1, 0])
+        ax3.plot(sumo_by_hour.index, sumo_by_hour["grid_power_kw"],
+                 color=C_SUMO, lw=2, label="SUMO")
+        ax3.plot(int_by_hour.index, int_by_hour["grid_power_kw"],
+                 color=C_INT, lw=2, ls="--", label="Internal")
+        ax3.set_xlabel("Hour of Day")
+        ax3.set_ylabel("Grid Power (kW)")
+        ax3.set_title("Grid Draw")
+        ax3.legend(fontsize=8)
+        ax3.grid(True, alpha=0.3)
+        ax3.set_xlim(-0.5, 23.5)
+
+        # --- Panel 4: Energy mix — SUMO (mid-center) ---
+        ax4 = fig.add_subplot(gs[1, 1])
+        ax4.stackplot(
+            sumo_by_hour.index,
+            sumo_by_hour["solar_output_kw"],
+            sumo_by_hour["wind_output_kw"],
+            sumo_by_hour["grid_power_kw"],
+            labels=["Solar", "Wind", "Grid"],
+            colors=[C_SOLAR, C_WIND, C_GRID], alpha=0.75,
+        )
+        ax4.set_xlabel("Hour of Day")
+        ax4.set_ylabel("Power (kW)")
+        ax4.set_title("Energy Mix — SUMO")
+        ax4.legend(loc="upper left", fontsize=8)
+        ax4.grid(True, alpha=0.3)
+        ax4.set_xlim(-0.5, 23.5)
+
+        # --- Panel 5: Energy mix — Internal (mid-right) ---
+        ax5 = fig.add_subplot(gs[1, 2])
+        ax5.stackplot(
+            int_by_hour.index,
+            int_by_hour["solar_output_kw"],
+            int_by_hour["wind_output_kw"],
+            int_by_hour["grid_power_kw"],
+            labels=["Solar", "Wind", "Grid"],
+            colors=[C_SOLAR, C_WIND, C_GRID], alpha=0.75,
+        )
+        ax5.set_xlabel("Hour of Day")
+        ax5.set_ylabel("Power (kW)")
+        ax5.set_title("Energy Mix — Internal")
+        ax5.legend(loc="upper left", fontsize=8)
+        ax5.grid(True, alpha=0.3)
+        ax5.set_xlim(-0.5, 23.5)
+
+        # --- Panel 6: Battery SOC overlay (bottom-left) ---
+        ax6 = fig.add_subplot(gs[2, 0])
+        ax6.plot(sumo_by_hour.index, sumo_by_hour["battery_soc"],
+                 color=C_SUMO, lw=2, label="SUMO")
+        ax6.plot(int_by_hour.index, int_by_hour["battery_soc"],
+                 color=C_INT, lw=2, ls="--", label="Internal")
+        ax6.set_xlabel("Hour of Day")
+        ax6.set_ylabel("Battery SOC")
+        ax6.set_title("Mean Battery SOC")
+        ax6.set_ylim(0, 1)
+        ax6.legend(fontsize=8)
+        ax6.grid(True, alpha=0.3)
+        ax6.set_xlim(-0.5, 23.5)
+
+        # --- Panel 7: Per-station demand comparison (bottom-center) ---
+        ax7 = fig.add_subplot(gs[2, 1])
+        stations = sorted(sumo_hourly["station"].unique())
+        sumo_st = sumo_hourly.groupby("station")["demand_kw"].mean()
+        int_st = internal_hourly.groupby("station")["demand_kw"].mean()
+        x_st = np.arange(len(stations))
+        ax7.bar(x_st - 0.2, [sumo_st.get(s, 0) for s in stations], 0.4,
+                color=C_SUMO, label="SUMO", alpha=0.85)
+        ax7.bar(x_st + 0.2, [int_st.get(s, 0) for s in stations], 0.4,
+                color=C_INT, label="Internal", alpha=0.85)
+        ax7.set_xlabel("Station")
+        ax7.set_ylabel("Mean Demand (kW)")
+        ax7.set_title("Per-Station Avg Demand")
+        ax7.set_xticks(x_st)
+        ax7.set_xticklabels([f"S{s}" for s in stations])
+        ax7.legend(fontsize=8)
+        ax7.grid(True, axis="y", alpha=0.3)
+
+        # --- Panel 8: Reward overlay (bottom-right) ---
+        ax8 = fig.add_subplot(gs[2, 2])
+        sumo_reward = sumo_hourly.groupby("hour")["reward"].mean()
+        int_reward = internal_hourly.groupby("hour")["reward"].mean()
+        ax8.plot(sumo_reward.index, sumo_reward.values,
+                 color=C_SUMO, lw=2, label="SUMO")
+        ax8.plot(int_reward.index, int_reward.values,
+                 color=C_INT, lw=2, ls="--", label="Internal")
+        ax8.set_xlabel("Hour of Day")
+        ax8.set_ylabel("Mean Reward")
+        ax8.set_title("Micro-RL Reward")
+        ax8.legend(fontsize=8)
+        ax8.grid(True, alpha=0.3)
+        ax8.set_xlim(-0.5, 23.5)
+
+        fig.savefig(os.path.join(plots_dir, "comparison_dashboard.png"),
+                    dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  comparison_dashboard.png")
+
+    # =====================================================================
+    # Figure 2: Demand profile (standalone, always generated)
+    # =====================================================================
     fig, ax = plt.subplots(figsize=(12, 5))
-    sumo_demand = sumo_hourly.groupby("hour")["demand_kw"].mean()
-    ax.plot(sumo_demand.index, sumo_demand.values, "b-o", label="SUMO Demand")
-
-    if internal_hourly is not None:
-        int_demand = internal_hourly.groupby("hour")["demand_kw"].mean()
-        ax.plot(int_demand.index, int_demand.values, "r--s",
-                label="Internal Demand")
-
+    sumo_demand = sumo_by_hour["demand_kw"]
+    ax.plot(sumo_demand.index, sumo_demand.values,
+            color=C_SUMO, marker="o", ms=5, lw=2, label="SUMO")
+    if has_internal:
+        int_demand = int_by_hour["demand_kw"]
+        ax.plot(int_demand.index, int_demand.values,
+                color=C_INT, marker="s", ms=5, lw=2, ls="--", label="Internal")
     ax.set_xlabel("Hour of Day")
     ax.set_ylabel("Avg Demand (kW)")
     ax.set_title("Hourly Charging Demand: SUMO vs Internal")
     ax.legend()
     ax.grid(True, alpha=0.3)
+    ax.set_xlim(-0.5, 23.5)
+    ax.set_xticks(range(24))
     fig.savefig(os.path.join(plots_dir, "demand_profile.png"),
                 dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    # --- Plot 2: Energy source breakdown ---
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-    for ax_idx, (df, label) in enumerate([
-        (sumo_hourly, "SUMO"),
-        (internal_hourly, "Internal"),
+    # =====================================================================
+    # Figure 3: Energy sources side-by-side
+    # =====================================================================
+    n_cols = 2 if has_internal else 1
+    fig, axes = plt.subplots(1, n_cols, figsize=(7 * n_cols, 5), squeeze=False)
+    for ax_idx, (df_h, label) in enumerate([
+        (sumo_by_hour, "SUMO"),
+        (int_by_hour, "Internal"),
     ]):
-        if df is None:
+        if df_h is None:
             continue
-        ax = axes[ax_idx]
-        by_hour = df.groupby("hour")[
-            ["grid_power_kw", "solar_output_kw", "wind_output_kw"]
-        ].mean()
+        ax = axes[0, ax_idx]
         ax.stackplot(
-            by_hour.index,
-            by_hour["solar_output_kw"],
-            by_hour["wind_output_kw"],
-            by_hour["grid_power_kw"],
+            df_h.index,
+            df_h["solar_output_kw"],
+            df_h["wind_output_kw"],
+            df_h["grid_power_kw"],
             labels=["Solar", "Wind", "Grid"],
-            alpha=0.7,
+            colors=[C_SOLAR, C_WIND, C_GRID], alpha=0.75,
         )
         ax.set_xlabel("Hour of Day")
         ax.set_ylabel("Power (kW)")
         ax.set_title(f"{label} — Energy Sources")
-        ax.legend(loc="upper left")
+        ax.legend(loc="upper left", fontsize=8)
         ax.grid(True, alpha=0.3)
-
+        ax.set_xlim(-0.5, 23.5)
     fig.savefig(os.path.join(plots_dir, "energy_sources.png"),
                 dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    # --- Plot 3: Battery SOC trajectory ---
-    fig, ax = plt.subplots(figsize=(12, 5))
-    for station in sumo_hourly["station"].unique():
-        sdf = sumo_hourly[sumo_hourly["station"] == station]
-        time_idx = range(len(sdf))
-        ax.plot(time_idx, sdf["battery_soc"].values,
-                label=f"Station {station}")
-    ax.set_xlabel("Simulation Hour")
-    ax.set_ylabel("Battery SOC")
-    ax.set_title("Battery SOC Trajectories (SUMO)")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    ax.set_ylim(0, 1)
+    # =====================================================================
+    # Figure 4: Battery SOC trajectories per station
+    # =====================================================================
+    n_cols = 2 if has_internal else 1
+    fig, axes = plt.subplots(1, n_cols, figsize=(7 * n_cols, 5), squeeze=False)
+    for ax_idx, (df, label) in enumerate([
+        (sumo_hourly, "SUMO"),
+        (internal_hourly if has_internal else None, "Internal"),
+    ]):
+        if df is None:
+            continue
+        ax = axes[0, ax_idx]
+        for station in sorted(df["station"].unique()):
+            sdf = df[df["station"] == station]
+            ax.plot(range(len(sdf)), sdf["battery_soc"].values,
+                    label=f"Station {station}")
+        ax.set_xlabel("Simulation Hour")
+        ax.set_ylabel("Battery SOC")
+        ax.set_title(f"Battery SOC — {label}")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim(0, 1)
     fig.savefig(os.path.join(plots_dir, "battery_soc.png"),
                 dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    # --- Plot 4: SUMO-specific — vehicles at stations ---
+    # =====================================================================
+    # Figure 5: SUMO vehicles at stations
+    # =====================================================================
     if "sumo_vehicles_charging" in sumo_hourly.columns:
         fig, ax = plt.subplots(figsize=(12, 5))
-        for station in sumo_hourly["station"].unique():
+        for station in sorted(sumo_hourly["station"].unique()):
             sdf = sumo_hourly[sumo_hourly["station"] == station]
             ax.plot(range(len(sdf)), sdf["sumo_vehicles_charging"].values,
                     label=f"Station {station} (charging)")
@@ -861,11 +1049,63 @@ def _generate_plots(
         ax.set_xlabel("Simulation Hour")
         ax.set_ylabel("Vehicle Count")
         ax.set_title("SUMO — Vehicles at Charging Stations")
-        ax.legend()
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
         fig.savefig(os.path.join(plots_dir, "sumo_vehicles.png"),
                     dpi=150, bbox_inches="tight")
         plt.close(fig)
+
+    # =====================================================================
+    # Figure 6: Correlation scatter (SUMO vs Internal)
+    # =====================================================================
+    if has_internal:
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+        # Merge on (day, hour, station) for point-by-point comparison
+        merged = sumo_hourly.merge(
+            internal_hourly,
+            on=["day", "hour", "station"],
+            suffixes=("_sumo", "_int"),
+        )
+
+        for ax, col, label in zip(
+            axes,
+            ["demand_kw", "grid_power_kw", "battery_soc"],
+            ["Demand (kW)", "Grid Power (kW)", "Battery SOC"],
+        ):
+            s_col = f"{col}_sumo"
+            i_col = f"{col}_int"
+            if s_col in merged.columns and i_col in merged.columns:
+                ax.scatter(merged[i_col], merged[s_col],
+                           alpha=0.4, s=20, color=C_SUMO)
+                lims = [
+                    min(merged[i_col].min(), merged[s_col].min()),
+                    max(merged[i_col].max(), merged[s_col].max()),
+                ]
+                if lims[0] < lims[1]:
+                    ax.plot(lims, lims, "k--", alpha=0.5, lw=1, label="y = x")
+                ax.set_xlabel(f"Internal {label}")
+                ax.set_ylabel(f"SUMO {label}")
+                ax.set_title(f"{label}: Correlation")
+                ax.legend(fontsize=8)
+                ax.grid(True, alpha=0.3)
+                # Annotate R-squared
+                if len(merged) > 1:
+                    corr = merged[[s_col, i_col]].corr().iloc[0, 1]
+                    r_sq = corr ** 2
+                    ax.text(
+                        0.05, 0.92, f"R² = {r_sq:.3f}",
+                        transform=ax.transAxes, fontsize=10,
+                        bbox=dict(boxstyle="round", fc="white", alpha=0.8),
+                    )
+
+        fig.suptitle("SUMO vs Internal — Point-by-Point Correlation",
+                     fontsize=13, fontweight="bold")
+        fig.tight_layout(rect=[0, 0, 1, 0.94])
+        fig.savefig(os.path.join(plots_dir, "correlation_scatter.png"),
+                    dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  correlation_scatter.png")
 
     print(f"  Plots saved to {plots_dir}/")
 
