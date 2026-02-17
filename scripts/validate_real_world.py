@@ -30,6 +30,8 @@ sys.path.insert(0, str(project_root))
 import torch
 
 from ev_charge_manager.energy.manager import (
+    CHARGER_RATED_POWER_KW,
+    CHARGER_AVG_DRAW_FACTOR,
     EnergyManagerConfig,
     GridSourceConfig,
     SolarSourceConfig,
@@ -42,59 +44,149 @@ from ev_charge_manager.data.providers import RealWeatherProvider, RealTrafficPro
 from ev_charge_manager.data.baseline_strategy import RuleBasedEnergyManager
 
 
-def parse_best_config(training_result: Dict, run_config: Dict) -> Dict:
+def _find_best_config(training_result: Dict, model_dir: str) -> Dict:
+    """
+    Locate the best_config dict from available training artifacts.
+
+    Tries, in order:
+      1. training_result["best_config"] (standard location)
+      2. results.json in the same model_dir
+      3. Last entry with best_config in training_history.jsonl
+    Returns the raw best_config dict, or raises SystemExit with guidance.
+    """
+    # --- 1. Direct key in training_result ---
+    best = training_result.get("best_config")
+    if best is not None and isinstance(best, dict):
+        return best
+
+    # --- 2. Try results.json (written by hierarchical.py entry point) ---
+    results_path = os.path.join(model_dir, "results.json")
+    if os.path.isfile(results_path):
+        with open(results_path, "r") as f:
+            results = json.load(f)
+        best = results.get("best_config")
+        if best is not None and isinstance(best, dict):
+            print("  (loaded best_config from results.json)")
+            return best
+
+    # --- 3. Scan training_history.jsonl for last best_config snapshot ---
+    history_path = os.path.join(model_dir, "training_history.jsonl")
+    if os.path.isfile(history_path):
+        last_best = None
+        with open(history_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                if "best_config" in record and record["best_config"]:
+                    last_best = record["best_config"]
+        if last_best is not None:
+            print("  (loaded best_config from training_history.jsonl)")
+            return last_best
+
+    # --- Nothing found ---
+    print("\nERROR: Could not find 'best_config' in any training artifact.")
+    print(f"  Searched: training_result.json, results.json, training_history.jsonl")
+    print(f"  In directory: {model_dir}")
+    print(f"\n  Keys found in training_result.json: {list(training_result.keys())}")
+    print("\n  The model may not have completed macro-agent training.")
+    print("  Re-run training with enough macro episodes for the agent to")
+    print("  find a valid infrastructure configuration, e.g.:")
+    print("    python hierarchical.py --macro-episodes 500 --mode sequential")
+    sys.exit(1)
+
+
+def _parse_positions(raw) -> List[float]:
+    """Parse positions from either a numpy array string or a list."""
+    if isinstance(raw, list):
+        return [float(x) for x in raw]
+    # String like "[ 85.96679211 130.         240.82274199]"
+    pos_str = str(raw).strip("[] ")
+    return [float(x) for x in pos_str.split() if x]
+
+
+def _parse_config_str(config_str: str) -> EnergyManagerConfig:
+    """Parse an EnergyManagerConfig from its string representation."""
+    import re
+    source_configs = []
+
+    grid_match = re.search(r"GridSourceConfig\(.*?max_power_kw=([\d.]+)", config_str)
+    if grid_match:
+        source_configs.append(GridSourceConfig(max_power_kw=float(grid_match.group(1))))
+
+    solar_match = re.search(r"SolarSourceConfig\(.*?peak_power_kw=([\d.]+)", config_str)
+    if solar_match:
+        source_configs.append(SolarSourceConfig(peak_power_kw=float(solar_match.group(1))))
+
+    wind_match = re.search(r"WindSourceConfig\(.*?base_power_kw=([\d.]+)", config_str)
+    if wind_match:
+        source_configs.append(WindSourceConfig(base_power_kw=float(wind_match.group(1))))
+
+    battery_cap_match = re.search(r"BatteryStorageConfig\(.*?capacity_kwh=([\d.]+)", config_str)
+    battery_rate_match = re.search(r"max_charge_rate_kw=([\d.]+)", config_str)
+    if battery_cap_match and battery_rate_match:
+        source_configs.append(BatteryStorageConfig(
+            capacity_kwh=float(battery_cap_match.group(1)),
+            max_charge_rate_kw=float(battery_rate_match.group(1)),
+            max_discharge_rate_kw=float(battery_rate_match.group(1)),
+            initial_soc=0.5,
+            min_soc=0.1,
+            max_soc=0.95,
+            round_trip_efficiency=0.9,
+        ))
+
+    return EnergyManagerConfig(source_configs=source_configs)
+
+
+def _build_default_configs(n_stations: int, run_config: Dict) -> List[EnergyManagerConfig]:
+    """Build default EnergyManagerConfig list from run_config when configs are missing."""
+    base_cfg = EnergyManagerConfig(source_configs=[
+        GridSourceConfig(max_power_kw=run_config.get("grid_kw", 500)),
+        SolarSourceConfig(peak_power_kw=run_config.get("solar_kw", 300)),
+        BatteryStorageConfig(
+            capacity_kwh=run_config.get("battery_kwh", 500),
+            max_charge_rate_kw=run_config.get("battery_kw", 100),
+            max_discharge_rate_kw=run_config.get("battery_kw", 100),
+            initial_soc=0.5, min_soc=0.1, max_soc=0.95,
+            round_trip_efficiency=0.9,
+        ),
+    ])
+    return [base_cfg] * n_stations
+
+
+def parse_best_config(training_result: Dict, run_config: Dict,
+                      model_dir: str = "") -> Dict:
     """
     Parse the best infrastructure configuration from training results.
 
+    Searches multiple artifact files for best_config, handles both string
+    and list representations, and falls back to run_config defaults when
+    energy source configs are missing.
+
     Returns dict with positions, configs (EnergyManagerConfig), n_chargers, n_waiting.
     """
-    best = training_result["best_config"]
+    best = _find_best_config(training_result, model_dir)
 
-    # Parse positions from string representation
-    pos_str = best["positions"]
-    # Handle numpy array string like "[ 85.96  130.    240.82]"
-    pos_str = pos_str.strip("[] ")
-    positions = [float(x) for x in pos_str.split() if x]
+    positions = _parse_positions(best["positions"])
+    n_stations = len(positions)
+    n_chargers = best.get("n_chargers", [6] * n_stations)
+    n_waiting = best.get("n_waiting", [10] * n_stations)
 
-    n_chargers = best["n_chargers"]
-    n_waiting = best["n_waiting"]
-
-    # Parse config strings back into EnergyManagerConfig objects
-    configs = []
-    for config_str in best["configs"]:
-        source_configs = []
-
-        # Extract GridSourceConfig
-        import re
-        grid_match = re.search(r"GridSourceConfig\(.*?max_power_kw=([\d.]+)", config_str)
-        if grid_match:
-            source_configs.append(GridSourceConfig(max_power_kw=float(grid_match.group(1))))
-
-        # Extract SolarSourceConfig
-        solar_match = re.search(r"SolarSourceConfig\(.*?peak_power_kw=([\d.]+)", config_str)
-        if solar_match:
-            source_configs.append(SolarSourceConfig(peak_power_kw=float(solar_match.group(1))))
-
-        # Extract WindSourceConfig
-        wind_match = re.search(r"WindSourceConfig\(.*?base_power_kw=([\d.]+)", config_str)
-        if wind_match:
-            source_configs.append(WindSourceConfig(base_power_kw=float(wind_match.group(1))))
-
-        # Extract BatteryStorageConfig
-        battery_cap_match = re.search(r"BatteryStorageConfig\(.*?capacity_kwh=([\d.]+)", config_str)
-        battery_rate_match = re.search(r"max_charge_rate_kw=([\d.]+)", config_str)
-        if battery_cap_match and battery_rate_match:
-            source_configs.append(BatteryStorageConfig(
-                capacity_kwh=float(battery_cap_match.group(1)),
-                max_charge_rate_kw=float(battery_rate_match.group(1)),
-                max_discharge_rate_kw=float(battery_rate_match.group(1)),
-                initial_soc=0.5,
-                min_soc=0.1,
-                max_soc=0.95,
-                round_trip_efficiency=0.9,
-            ))
-
-        configs.append(EnergyManagerConfig(source_configs=source_configs))
+    # Parse energy configs — may be string representations or absent
+    raw_configs = best.get("configs")
+    if raw_configs and isinstance(raw_configs, list) and len(raw_configs) == n_stations:
+        configs = []
+        for cfg in raw_configs:
+            if isinstance(cfg, str) and "Config(" in cfg:
+                configs.append(_parse_config_str(cfg))
+            else:
+                configs = _build_default_configs(n_stations, run_config)
+                print("  (energy configs not parseable, using defaults from run_config)")
+                break
+    else:
+        configs = _build_default_configs(n_stations, run_config)
+        print("  (no energy configs in best_config, using defaults from run_config)")
 
     return {
         "positions": positions,
@@ -172,6 +264,7 @@ def run_year(
     weather_provider: RealWeatherProvider,
     traffic_provider: RealTrafficProvider,
     n_chargers: List[int],
+    run_config: Dict,
     n_days: int = 365,
     label: str = "agent",
 ) -> Dict:
@@ -195,10 +288,12 @@ def run_year(
             timestamp = date.replace(hour=hour, minute=0, second=0)
 
             for i, manager in enumerate(managers):
-                # Get traffic-based demand
+                # Get traffic-based demand using shared charger power constant
                 traffic_rate = traffic_provider.get_vehicles_per_hour(timestamp)
-                # Demand: each charging EV draws ~50kW on average
-                demand_kw = n_chargers[i] * 50.0 * (traffic_rate / 60.0)
+                effective_power = CHARGER_RATED_POWER_KW * CHARGER_AVG_DRAW_FACTOR
+                traffic_max = run_config.get("traffic_max", 80.0)
+                occupancy = min(1.0, traffic_rate / traffic_max)
+                demand_kw = n_chargers[i] * effective_power * occupancy
                 demand_kw *= random.uniform(0.9, 1.1)  # Light noise
                 demand_kw = max(10.0, demand_kw)  # Minimum load
 
@@ -437,10 +532,22 @@ def main():
     print("Loading model configuration...")
     with open(os.path.join(model_dir, "run_config.json"), "r") as f:
         run_config = json.load(f)
-    with open(os.path.join(model_dir, "training_result.json"), "r") as f:
-        training_result = json.load(f)
 
-    infra = parse_best_config(training_result, run_config)
+    # Try training_result.json first, fall back to results.json
+    tr_path = os.path.join(model_dir, "training_result.json")
+    results_path = os.path.join(model_dir, "results.json")
+    if os.path.isfile(tr_path):
+        with open(tr_path, "r") as f:
+            training_result = json.load(f)
+    elif os.path.isfile(results_path):
+        print("  (using results.json — training_result.json not found)")
+        with open(results_path, "r") as f:
+            training_result = json.load(f)
+    else:
+        print(f"\nERROR: Neither training_result.json nor results.json found in {model_dir}")
+        sys.exit(1)
+
+    infra = parse_best_config(training_result, run_config, model_dir=model_dir)
     print(f"  Stations: {len(infra['positions'])}")
     for i, pos in enumerate(infra["positions"]):
         print(f"    Station {i}: {pos:.1f} km, {infra['n_chargers'][i]} chargers")
@@ -484,7 +591,7 @@ def main():
     np.random.seed(args.seed)
     rl_results = run_year(
         rl_managers, weather_provider, traffic_provider,
-        infra["n_chargers"], n_days=n_days, label="RL"
+        infra["n_chargers"], run_config=run_config, n_days=n_days, label="RL"
     )
 
     print(f"\n--- Rule-Based Baseline ({n_days} days) ---")
@@ -492,7 +599,7 @@ def main():
     np.random.seed(args.seed)
     baseline_results = run_year(
         baseline_managers, weather_provider, traffic_provider,
-        infra["n_chargers"], n_days=n_days, label="Baseline"
+        infra["n_chargers"], run_config=run_config, n_days=n_days, label="Baseline"
     )
 
     # --- Compare ---

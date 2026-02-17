@@ -16,7 +16,9 @@ from datetime import datetime, timedelta
 
 from ev_charge_manager.simulation import Simulation, SimulationParameters
 from ev_charge_manager.energy import (
-    EnergyManagerConfig, 
+    CHARGER_RATED_POWER_KW,
+    CHARGER_AVG_DRAW_FACTOR,
+    EnergyManagerConfig,
     EnergySourceConfig,
     GridSourceConfig,
     SolarSourceConfig,
@@ -26,6 +28,10 @@ from ev_charge_manager.energy import (
 from ev_charge_manager.energy import HierarchicalEnergyManager, GridPricingSchedule
 from ev_charge_manager.highway import Highway
 from ev_charge_manager.charging import ChargingArea
+from ev_charge_manager.data.traffic_profiles import (
+    WEEKDAY_HOURLY_FRACTIONS,
+    PEAK_HOURLY_FRACTION,
+)
 
 
 @dataclass
@@ -74,8 +80,8 @@ class CostParameters:
     blackout_penalty: float = 50000.0
     energy_cost_weight: float = 1.0
     
-    # Micro-RL agent costs
-    grid_peak_price: float = 0.35
+    # Micro-RL agent costs (defaults must match CLI defaults in hierarchical.py)
+    grid_peak_price: float = 0.25
     grid_shoulder_price: float = 0.15
     grid_offpeak_price: float = 0.08
 
@@ -410,17 +416,19 @@ class MultiAgentChargingEnv(gym.Env):
                     ps.shoulder_price = max(0.03, self.cost_params.grid_shoulder_price * (1 + noise))
                     ps.off_peak_price = max(0.01, self.cost_params.grid_offpeak_price * (1 + noise))
 
-            # Calculate traffic-based demand for each station
-            # Peak traffic around hours 8-9 and 17-18
-            traffic_factor = 1.0
-            if 7 <= hour <= 9 or 17 <= hour <= 19:
-                traffic_factor = 1.5
+            # Calculate traffic-based demand for each station.
+            # Uses the BASt weekday hourly profile so the agent trains on the
+            # same demand shape that SUMO produces during validation.
+            hourly_shape = WEEKDAY_HOURLY_FRACTIONS[hour] / PEAK_HOURLY_FRACTION
 
             for i, manager in enumerate(managers):
-                # Base demand varies by traffic and station size
-                base_demand = n_chargers_list[i] * 50 * traffic_factor  # 50kW per charger
+                # Demand = n_chargers × effective_power × occupancy × noise
+                # hourly_shape ∈ [0.1, 1.0]: time-of-day curve from BASt data
+                # traffic ratio: episode-level traffic volume / max traffic
+                effective_power = CHARGER_RATED_POWER_KW * CHARGER_AVG_DRAW_FACTOR
+                occupancy = min(1.5, hourly_shape * (self.current_traffic / self.traffic_range[1]))
                 demand_noise = random.uniform(0.8, 1.2)
-                demand_kw = base_demand * demand_noise * (self.current_traffic / 60.0)
+                demand_kw = n_chargers_list[i] * effective_power * occupancy * demand_noise
                 
                 # Run micro-RL step
                 result = manager.step(

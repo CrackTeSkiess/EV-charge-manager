@@ -5,12 +5,14 @@ Install RL support with:  pip install torch gymnasium
 """
 
 from .manager import (
+    CHARGER_RATED_POWER_KW, CHARGER_AVG_DRAW_FACTOR,
     EnergySourceType, EnergySourceConfig,
     GridSourceConfig, SolarSourceConfig, WindSourceConfig, BatteryStorageConfig,
     EnergyManagerConfig, EnergySource, EnergyManager,
 )
 
 __all__ = [
+    "CHARGER_RATED_POWER_KW", "CHARGER_AVG_DRAW_FACTOR",
     "EnergySourceType", "EnergySourceConfig",
     "GridSourceConfig", "SolarSourceConfig", "WindSourceConfig", "BatteryStorageConfig",
     "EnergyManagerConfig", "EnergySource", "EnergyManager",

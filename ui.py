@@ -372,6 +372,56 @@ def _collect_analysis() -> Optional[List[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Parameter collection — SUMO Validation
+# ---------------------------------------------------------------------------
+
+def _collect_sumo_validation() -> Optional[List[str]]:
+    _header("SUMO Validation — Configuration")
+    _info("Validates the trained hierarchical RL model using SUMO traffic simulation.")
+    _info("The macro agent's best config builds the highway; the micro agent manages energy.")
+
+    # ── Model ────────────────────────────────────────────────────────────────
+    _section("Trained Model")
+    model_dir = _ask("Model directory", default="./models/hierarchical")
+
+    # ── SUMO Traffic ─────────────────────────────────────────────────────────
+    _section("SUMO Traffic Parameters")
+    days           = _ask("Simulation days",                      default=1,       cast=int)
+    base_aadt      = _ask("Annual Average Daily Traffic (AADT)",  default=50000.0, cast=float)
+    ev_penetration = _ask("EV penetration fraction (0-1)",        default=0.15,    cast=float)
+
+    # ── Options ──────────────────────────────────────────────────────────────
+    _section("Options")
+    _info("Use sumo-gui to visually observe the traffic simulation.")
+    sumo_binary     = _ask("SUMO binary", default="sumo", choices=["sumo", "sumo-gui"])
+    compare_internal = _ask_bool("Also run internal sim for comparison?", default=False)
+    no_plots        = _ask_bool("Skip plot generation?", default=False)
+
+    # ── Output ───────────────────────────────────────────────────────────────
+    _section("Output")
+    output_dir = _ask("Output directory", default="./validation_output/sumo")
+    seed_val   = _ask("Random seed", default=42, cast=int)
+
+    # ── Build command ────────────────────────────────────────────────────────
+    cmd = [
+        sys.executable, "scripts/validate_sumo.py",
+        "--model-dir",      model_dir,
+        "--days",           str(days),
+        "--base-aadt",      str(base_aadt),
+        "--ev-penetration", str(ev_penetration),
+        "--sumo-binary",    sumo_binary,
+        "--output-dir",     output_dir,
+        "--seed",           str(seed_val),
+    ]
+    if compare_internal:
+        cmd.append("--compare-internal")
+    if no_plots:
+        cmd.append("--no-plots")
+
+    return cmd
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
@@ -398,6 +448,7 @@ MAIN_MENU_OPTIONS = [
     ("train",     "Hierarchical RL     — train micro + macro agents"),
     ("visualize", "Visualize Results   — training plots, comparison charts"),
     ("analysis",  "Analysis Tools      — stranding analysis, infra optimizer"),
+    ("validate",  "SUMO Validation     — validate RL model with SUMO traffic sim"),
     ("exit",      "Exit"),
 ]
 
@@ -451,6 +502,23 @@ def main() -> None:
         # ── Analysis tools ────────────────────────────────────────────────────
         elif choice == "analysis":
             cmd = _collect_analysis()
+            if cmd and _confirm_run(cmd):
+                print()
+                subprocess.run(cmd)
+
+        # ── SUMO Validation ──────────────────────────────────────────────────
+        elif choice == "validate":
+            try:
+                from ev_charge_manager.sumo import check_sumo_available
+                if not check_sumo_available():
+                    raise ImportError("SUMO not found")
+            except (ImportError, RuntimeError):
+                _warn("SUMO is not installed or SUMO_HOME is not set.")
+                _info("Install: pip install eclipse-sumo traci sumolib")
+                _info("Then:    export SUMO_HOME=/usr/local/lib/python3.11/dist-packages/sumo")
+                print()
+                continue
+            cmd = _collect_sumo_validation()
             if cmd and _confirm_run(cmd):
                 print()
                 subprocess.run(cmd)
