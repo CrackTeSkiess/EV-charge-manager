@@ -6,7 +6,6 @@ Run this file to start a simulation of the EV charging ecosystem.
 import argparse
 import sys
 from datetime import datetime
-from pathlib import Path
 
 from ev_charge_manager.simulation import Simulation, SimulationParameters, EarlyStopCondition
 from ev_charge_manager.vehicle.generator import TemporalDistribution
@@ -16,6 +15,7 @@ from ev_charge_manager.energy import (
     EnergyManagerConfig, GridSourceConfig, SolarSourceConfig,
     WindSourceConfig, BatteryStorageConfig
 )
+from ev_charge_manager.utils import RunDirectory
 
 
 def parse_args():
@@ -68,6 +68,11 @@ def parse_args():
     parser.add_argument(
         "--output-dir", type=str, default="./simulation_output",
         help="Directory to save results and visualizations"
+    )
+    parser.add_argument(
+        "--run-name", type=str, default=None,
+        help="Human-readable name for this run (used in output folder name). "
+             "If not provided, a short UUID is used."
     )
     parser.add_argument(
         "--no-visualize", action="store_true",
@@ -191,18 +196,22 @@ def main():
         verbose=not args.quiet
     )
 
-    # Save results
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Save results into a per-run directory
+    run_dir = RunDirectory(
+        base_dir=args.output_dir,
+        run_name=args.run_name,
+        subdirs=["data", "plots", "reports"],
+    )
+    run_dir.save_metadata(vars(args))
 
-    print(f"\nSaving results to {output_dir}...")
-    result.save(str(output_dir))
+    print(f"\nSaving results to {run_dir.root}...")
+    result.save(run_dir.data_dir)
 
     # Generate visualizations
     if not args.no_visualize:
         try:
             print("Generating visualizations...")
-            viz_files = sim.visualize(str(output_dir))
+            viz_files = sim.visualize(run_dir.plots_dir)
             print(f"Generated {len(viz_files)} visualization files")
         except ImportError as e:
             print(f"Visualization skipped (missing dependency): {e}")
@@ -234,11 +243,16 @@ def main():
     print(f"  Total revenue: ${stats.get('total_revenue', 0):.2f}")
 
     print("=" * 70)
-    print(f"Results saved to: {output_dir}")
+    print(f"Results saved to: {run_dir.root}")
     print("=" * 70)
-    
+
     if not args.no_visualize:
-        report_data = sim.generate_stranding_report(output_dir=str(output_dir))
+        report_data = sim.generate_stranding_report(
+            output_dir=run_dir.root,
+            data_dir=run_dir.data_dir,
+            plots_dir=run_dir.plots_dir,
+            reports_dir=run_dir.reports_dir,
+        )
         if report_data["total_strandings"] > 0:
             print(f"\nStranding Report Summary:")
             print(f"  Total strandings: {report_data['total_strandings']}")

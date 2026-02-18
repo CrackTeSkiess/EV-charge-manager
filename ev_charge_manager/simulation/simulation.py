@@ -340,17 +340,21 @@ class SimulationResult:
     stop_value: Optional[float] = None
 
     def save(self, output_dir: str = "./simulation_results"):
-        """Save complete result to directory."""
+        """Save complete result to directory.
+
+        Uses clean filenames (``kpi.csv``, ``summary.json``,
+        ``final_state.json``) since each run now has its own directory.
+        """
         import os
         os.makedirs(output_dir, exist_ok=True)
 
-        base_path = f"{output_dir}/{self.simulation_id}"
-
         # Save KPI dataframe
-        self.kpi_dataframe.to_csv(f"{base_path}_kpi.csv", index=False)
+        self.kpi_dataframe.to_csv(
+            os.path.join(output_dir, "kpi.csv"), index=False
+        )
 
         # Save summary
-        with open(f"{base_path}_summary.json", 'w') as f:
+        with open(os.path.join(output_dir, "summary.json"), 'w') as f:
             summary = {
                 'simulation_id': self.simulation_id,
                 'stop_reason': self.stop_reason.name,
@@ -366,10 +370,10 @@ class SimulationResult:
             json.dump(summary, f, indent=2, default=str)
 
         # Save final state
-        with open(f"{base_path}_final_state.json", 'w') as f:
+        with open(os.path.join(output_dir, "final_state.json"), 'w') as f:
             json.dump(self.final_environment_state, f, indent=2, default=str)
 
-        return base_path
+        return output_dir
 
 
 class Simulation:
@@ -760,29 +764,40 @@ class Simulation:
             if issues:
                 print(f"WARNING: VehicleTracker consistency issues: {issues}")
                 
-    def generate_stranding_report(self, output_dir: str = "./simulation_output") -> Dict[str, Any]:
+    def generate_stranding_report(
+        self,
+        output_dir: str = "./simulation_output",
+        data_dir: Optional[str] = None,
+        plots_dir: Optional[str] = None,
+        reports_dir: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Generate comprehensive stranding analysis report with visualizations.
-        
+
         This method:
         1. Collects stranding data from VehicleTracker
         2. Generates multiple visualizations
         3. Saves data to JSON for further analysis
         4. Returns structured data for programmatic use
-        
+
         Args:
-            output_dir: Directory to save outputs (created if doesn't exist)
-            
+            output_dir: Root directory (used as fallback for subdirs).
+            data_dir: Directory for JSON data files (default: *output_dir*).
+            plots_dir: Directory for plot PNGs (default: *output_dir*).
+            reports_dir: Directory for text reports (default: *output_dir*).
+
         Returns:
             Dictionary containing stranding analysis data and file paths
         """
         import os
         import json
         from pathlib import Path
-        
-        # Ensure output directory exists
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
+
+        data_path = Path(data_dir or output_dir)
+        plot_path = Path(plots_dir or output_dir)
+        report_path_dir = Path(reports_dir or output_dir)
+        for p in (data_path, plot_path, report_path_dir):
+            p.mkdir(parents=True, exist_ok=True)
         
         # Check prerequisites
         if not self.vehicle_tracker:
@@ -837,18 +852,18 @@ class Simulation:
             highway_length_km=self.params.highway_length_km,
             station_positions=station_positions,
             station_names=station_names,
-            save_path=str(output_path / f"stranding_report_{self.id}"),
+            save_path=str(plot_path / "stranding_report"),
             show_plot=False
         )
-        
+
         # Generate additional KPI context if KPI data available
         if self.kpi_tracker and self.kpi_tracker.records:
             # Stranding over time plot
-            self._plot_stranding_timeline(output_path, viz)
-        
+            self._plot_stranding_timeline(plot_path, viz)
+
         # Step 4: Save raw data to JSON
         print("Saving data to JSON...")
-        json_path = output_path / f"stranding_data_{self.id}.json"
+        json_path = data_path / "stranding_data.json"
         
         # Prepare serializable data
         export_data = {
@@ -880,14 +895,14 @@ class Simulation:
         
         # Step 5: Generate text report
         print("Generating text report...")
-        report_path = output_path / f"stranding_report_{self.id}.txt"
-        self._write_text_report(report_path, export_data)
-        
+        report_file = report_path_dir / "stranding_report.txt"
+        self._write_text_report(report_file, export_data)
+
         # Collect output files
         output_files = [
-            output_path / f"stranding_report_{self.id}_stranding_analysis.png",
+            plot_path / "stranding_report_stranding_analysis.png",
             json_path,
-            report_path
+            report_file,
         ]
         
         print(f"\n{'='*60}")
@@ -946,7 +961,7 @@ class Simulation:
         plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
         
         plt.tight_layout()
-        plt.savefig(output_path / f"stranding_timeline_{self.id}.png",
+        plt.savefig(output_path / "stranding_timeline.png",
                 dpi=100, bbox_inches='tight', facecolor=viz.colors['background'])
         plt.close()
 

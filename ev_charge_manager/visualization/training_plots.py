@@ -948,39 +948,41 @@ class TrainingVisualizer:
         save_dir: str,
         show_plots: bool = False,
         highway_length: float = 300.0,
+        plots_dir: Optional[str] = None,
+        data_dir: Optional[str] = None,
     ) -> List[str]:
         """
         Generate all training plots from a completed training run.
 
-        Looks for the standard output files written by Phase 1 inside
-        *save_dir*:
-        - ``training_history.jsonl``
-        - ``micro_history.json``
-        - ``micro_final_day.json``
-        - ``training_result.json``
-
-        Plots are saved to ``{save_dir}/training_plots/``.
+        Data files are read from *data_dir* (falls back to *save_dir*).
+        Plots are saved to *plots_dir* (falls back to
+        ``{save_dir}/training_plots/``).
 
         Parameters
         ----------
         highway_length:
             Used for the background bands in ``plot_config_evolution``.
-            If *save_dir* contains a ``run_config.json`` with
-            ``highway_length``, that value is used automatically.
+            If a ``run_config.json`` is found, its value is used
+            automatically.
+        plots_dir:
+            Explicit directory for generated plots.
+        data_dir:
+            Directory containing training data files.
 
         Returns
         -------
         List of file paths that were successfully written.
         """
-        plots_dir = os.path.join(save_dir, "training_plots")
+        plots_dir = plots_dir or os.path.join(save_dir, "training_plots")
+        data_dir = data_dir or save_dir
         os.makedirs(plots_dir, exist_ok=True)
         generated: List[str] = []
 
-        macro_path   = os.path.join(save_dir, "training_history.jsonl")
-        micro_hist   = os.path.join(save_dir, "micro_history.json")
-        micro_day    = os.path.join(save_dir, "micro_final_day.json")
-        result_path  = os.path.join(save_dir, "training_result.json")
-        run_cfg_path = os.path.join(save_dir, "run_config.json")
+        macro_path   = os.path.join(data_dir, "training_history.jsonl")
+        micro_hist   = os.path.join(data_dir, "micro_history.json")
+        micro_day    = os.path.join(data_dir, "micro_final_day.json")
+        result_path  = os.path.join(data_dir, "training_result.json")
+        run_cfg_path = os.path.join(data_dir, "run_config.json")
 
         # Try to read highway_length from run_config.json
         run_cfg = self._load_json(run_cfg_path)

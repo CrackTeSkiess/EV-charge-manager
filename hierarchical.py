@@ -38,6 +38,7 @@ from ev_charge_manager.rl.hierarchical_trainer import (
 )
 from ev_charge_manager.energy import GridPricingSchedule
 from ev_charge_manager.energy.manager import CHARGER_RATED_POWER_KW, CHARGER_AVG_DRAW_FACTOR
+from ev_charge_manager.utils import RunDirectory
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +147,8 @@ def parse_args() -> argparse.Namespace:
                            help="Global random seed")
     sys_group.add_argument("--save-dir", type=str, default="./models/hierarchical",
                            help="Root directory for checkpoints and final models")
+    sys_group.add_argument("--run-name", type=str, default=None,
+                           help="Human-readable name for this run (used in output folder name)")
     sys_group.add_argument("--no-visualize", action="store_true",
                            help="Skip auto-generation of training plots after training")
 
@@ -300,17 +303,22 @@ def _run_frozen_micro(args: argparse.Namespace, env: MultiAgentChargingEnv,
     print(f"\n--- Macro-RL training ({config.macro_episodes} episodes) ---")
     print("Using pre-loaded micro-agents (frozen)")
 
+    models_dir = config.models_dir or config.output_dir
+    data_dir = config.data_dir or config.output_dir
+
     try:
         trainer.macro_trainer.train(
             total_episodes=config.macro_episodes,
             episodes_per_update=config.macro_episodes_per_update,
             eval_interval=config.eval_frequency,
             save_interval=config.checkpoint_frequency,
+            save_dir=models_dir,
+            history_dir=data_dir,
         )
     except KeyboardInterrupt:
         print("\nTraining interrupted by user – saving checkpoint...")
         trainer.macro_trainer.save(
-            os.path.join(args.save_dir, "macro_interrupted.pt")
+            os.path.join(models_dir, "macro_interrupted.pt")
         )
 
     final_eval = trainer.macro_trainer.evaluate(n_episodes=10)
@@ -321,7 +329,7 @@ def _run_frozen_micro(args: argparse.Namespace, env: MultiAgentChargingEnv,
         "macro_final_reward": final_eval["avg_reward"],
         "best_config": env.get_best_config(),
     }
-    result_path = os.path.join(args.save_dir, "training_result.json")
+    result_path = os.path.join(data_dir, "training_result.json")
     with open(result_path, "w") as fh:
         json.dump(result, fh, indent=2, default=str)
     return result
@@ -341,19 +349,30 @@ def main() -> None:
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
 
+    # Create per-run directory under the save-dir root
+    run_dir = RunDirectory(
+        base_dir=args.save_dir,
+        run_name=args.run_name,
+        subdirs=["data", "models", "plots"],
+    )
+    # Point save_dir at the run root so downstream code & banner work
+    args.save_dir = run_dir.root
+
     _banner(args)
-    os.makedirs(args.save_dir, exist_ok=True)
 
     # Persist run configuration (includes charger power for validation reproducibility)
     run_cfg = vars(args).copy()
     run_cfg["timestamp"] = datetime.now().isoformat()
     run_cfg["charger_rated_power_kw"] = CHARGER_RATED_POWER_KW
     run_cfg["charger_avg_draw_factor"] = CHARGER_AVG_DRAW_FACTOR
-    with open(os.path.join(args.save_dir, "run_config.json"), "w") as fh:
+    with open(os.path.join(run_dir.data_dir, "run_config.json"), "w") as fh:
         json.dump(run_cfg, fh, indent=2)
 
     env    = _make_env(args)
     config = _make_config(args)
+    # Wire subdirectory paths into TrainingConfig
+    config.data_dir = run_dir.data_dir
+    config.models_dir = run_dir.models_dir
 
     # ── Run ──────────────────────────────────────────────────────────────────
     try:
@@ -397,11 +416,11 @@ def main() -> None:
                 print("\nTraining interrupted by user.")
                 if trainer.macro_trainer is not None:
                     trainer.macro_trainer.save(
-                        os.path.join(args.save_dir, "macro_interrupted.pt")
+                        os.path.join(run_dir.models_dir, "macro_interrupted.pt")
                     )
                 if trainer.micro_trainer is not None:
                     trainer.micro_trainer.save(
-                        os.path.join(args.save_dir, "micro_interrupted")
+                        os.path.join(run_dir.models_dir, "micro_interrupted")
                     )
                 sys.exit(0)
 
@@ -415,7 +434,7 @@ def main() -> None:
     print("Training Complete")
     print("=" * 70)
 
-    results_path = os.path.join(args.save_dir, "results.json")
+    results_path = os.path.join(run_dir.data_dir, "results.json")
     with open(results_path, "w") as fh:
         json.dump(result, fh, indent=2, default=str)
 
@@ -439,13 +458,12 @@ def main() -> None:
         for k, v in (best.items() if isinstance(best, dict) else []):
             print(f"    {k}: {v}")
 
-    print(f"\nAll outputs saved to: {args.save_dir}/")
-    print(f"  run_config.json   – CLI parameters used")
-    print(f"  results.json      – final training metrics")
-    print(f"  training_result.json – full result (written by HierarchicalTrainer)")
+    print(f"\nAll outputs saved to: {run_dir.root}/")
+    print(f"  data/             – run_config.json, results.json, training_result.json")
+    print(f"  models/           – best_model.pt, final_model.pt, checkpoints")
     if mode in ("sequential", "curriculum"):
-        micro_path = os.path.join(args.save_dir, "micro_pretrained")
-        print(f"  micro_pretrained/ – trained energy-arbitrage agents")
+        micro_path = os.path.join(run_dir.models_dir, "micro_pretrained")
+        print(f"  models/micro_pretrained/ – trained energy-arbitrage agents")
         print(f"    Reuse with:  --mode frozen_micro --micro-load {micro_path}")
 
     # ── Post-training visualisation ───────────────────────────────────────────
@@ -454,14 +472,16 @@ def main() -> None:
             from ev_charge_manager.visualization.training_plots import TrainingVisualizer
             print("\nGenerating training plots …")
             plots = TrainingVisualizer().generate_full_report(
-                save_dir=args.save_dir,
+                save_dir=run_dir.root,
                 show_plots=False,
                 highway_length=args.highway_length,
+                plots_dir=run_dir.plots_dir,
+                data_dir=run_dir.data_dir,
             )
             if plots:
-                print(f"  Plots saved to {args.save_dir}/training_plots/")
+                print(f"  Plots saved to {run_dir.plots_dir}/")
                 print(f"  Re-run manually:  python visualize.py training "
-                      f"--save-dir {args.save_dir}")
+                      f"--save-dir {run_dir.root}")
         except Exception as exc:
             print(f"  Warning: could not generate training plots: {exc}")
     else:

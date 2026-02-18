@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+
+# Output directories
+simulation_output/
+models/
+validation_output/
