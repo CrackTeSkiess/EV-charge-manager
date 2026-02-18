@@ -70,6 +70,10 @@ class TrainingConfig:
     checkpoint_frequency: int = 100
     output_dir: str = "./hierarchical_models"
 
+    # Optional subdirectory overrides (default to output_dir)
+    data_dir: Optional[str] = None
+    models_dir: Optional[str] = None
+
 
 class MicroRLTrainer:
     """
@@ -343,9 +347,14 @@ class HierarchicalTrainer:
         self.env = env
         self.config = config
         self.device = device
-        
-        # Create output directory
-        os.makedirs(config.output_dir, exist_ok=True)
+
+        # Resolve subdirectory paths (fall back to output_dir)
+        self.data_dir = config.data_dir or config.output_dir
+        self.models_dir = config.models_dir or config.output_dir
+
+        # Create output directories
+        for d in (config.output_dir, self.data_dir, self.models_dir):
+            os.makedirs(d, exist_ok=True)
         
         # Training state
         self.current_phase: str = "init"
@@ -421,11 +430,11 @@ class HierarchicalTrainer:
         print(f"  Avg Grid Cost: ${micro_eval['avg_grid_cost']:.2f}")
         
         # Save micro-agents and training history
-        micro_path = os.path.join(self.config.output_dir, "micro_pretrained")
+        micro_path = os.path.join(self.models_dir, "micro_pretrained")
         self.micro_trainer.save(micro_path)
-        self.micro_trainer.save_history(self.config.output_dir)
+        self.micro_trainer.save_history(self.data_dir)
         print(f"Micro-agents saved to {micro_path}")
-        print(f"Micro history saved to {self.config.output_dir}/micro_history.json")
+        print(f"Micro history saved to {self.data_dir}/micro_history.json")
         
         # === PHASE 2: MACRO-RL TRAINING ===
         self.current_phase = "macro"
@@ -451,7 +460,8 @@ class HierarchicalTrainer:
             episodes_per_update=self.config.macro_episodes_per_update,
             eval_interval=self.config.eval_frequency,
             save_interval=self.config.checkpoint_frequency,
-            save_dir=self.config.output_dir,
+            save_dir=self.models_dir,
+            history_dir=self.data_dir,
         )
         
         # Final evaluation
@@ -589,7 +599,8 @@ class HierarchicalTrainer:
         self.macro_trainer.train(
             total_episodes=config.macro_episodes,
             episodes_per_update=config.macro_episodes_per_update,
-            save_dir=self.config.output_dir,
+            save_dir=self.models_dir,
+            history_dir=self.data_dir,
         )
 
         # Evaluate so stages 2+ report real metrics
@@ -620,7 +631,7 @@ class HierarchicalTrainer:
         result['training_time_seconds'] = elapsed
         
         # Save final results
-        with open(os.path.join(self.config.output_dir, "training_result.json"), 'w') as f:
+        with open(os.path.join(self.data_dir, "training_result.json"), 'w') as f:
             json.dump(result, f, indent=2, default=str)
         
         print(f"\nTraining completed in {elapsed/3600:.2f} hours")

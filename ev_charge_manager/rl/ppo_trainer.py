@@ -395,23 +395,27 @@ class MultiAgentPPO:
         save_interval: int = 100,
         eval_interval: int = 50,
         save_dir: Optional[str] = None,
+        history_dir: Optional[str] = None,
     ):
         """
         Main training loop.
 
-        If *save_dir* is provided, a ``training_history.jsonl`` file is written
-        there — one JSON record per update — so training progress can be plotted
-        after (or during) the run.
+        If *save_dir* is provided, model checkpoints are written there.
+        ``training_history.jsonl`` is written to *history_dir* (defaults
+        to *save_dir*) so training progress can be plotted after the run.
         """
         print(f"\nStarting training for {total_episodes} episodes")
         print(f"Agents: {self.n_agents}, Device: {self.device}")
 
+        history_dir = history_dir or save_dir
         history_path = None
-        if save_dir:
-            os.makedirs(save_dir, exist_ok=True)
-            history_path = os.path.join(save_dir, "training_history.jsonl")
+        if history_dir:
+            os.makedirs(history_dir, exist_ok=True)
+            history_path = os.path.join(history_dir, "training_history.jsonl")
             # Truncate any previous file from an earlier run
             open(history_path, "w").close()
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
 
         total_updates = max(1, total_episodes // episodes_per_update)
 

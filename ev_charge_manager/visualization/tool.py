@@ -1507,7 +1507,9 @@ class VisualizationTool:
         import os
         os.makedirs(output_dir, exist_ok=True)
 
-        base_path = f"{output_dir}/simulation_{self.id}"
+        # Use a clean prefix without UUID — the run directory name
+        # already identifies the run.
+        base_path = os.path.join(output_dir, "simulation")
 
         generated = []
 
