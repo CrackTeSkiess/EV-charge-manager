@@ -136,6 +136,158 @@ def _confirm_run(cmd: List[str]) -> bool:
     print()
     return _ask_bool("Proceed?", default=True)
 
+
+# ---------------------------------------------------------------------------
+# Highway Selection helper
+# ---------------------------------------------------------------------------
+
+def _run_highway_selector() -> Optional[object]:
+    """
+    Interactive wizard that fetches real highway service area data from OSM.
+
+    Presents the registry of pre-registered highways, asks for a segment
+    km range, calls HighwaySelector.select() in-process, prints the result,
+    and returns a HighwaySelectionResult (or None if the user cancels).
+    """
+    try:
+        from ev_charge_manager.highway_selection import HighwaySelector, HIGHWAY_REGISTRY
+    except ImportError as exc:
+        _err(f"Could not import highway_selection module: {exc}")
+        return None
+
+    _header("Real Highway Selection  (OpenStreetMap)")
+    _info("Service area positions will be fetched from OpenStreetMap (no API key needed).")
+    _info("Results are cached locally — subsequent runs are instant.")
+    print()
+
+    # ── Show the registry as a numbered list ──────────────────────────────
+    hws = HighwaySelector.list_available_highways()
+    print(_c("  Registered highways:", _BOLD))
+    print()
+    for i, hw in enumerate(hws, 1):
+        line = (
+            f"    {_c(str(i).rjust(2), _CYAN, _BOLD)}.  "
+            f"{_c(hw['ref'], _BOLD, _YELLOW):<10}"
+            f"  {hw['country']}   ~{hw['approx_km']:>5} km"
+        )
+        print(line)
+    print()
+    _info("You can also type a custom highway ref (e.g. A96) after choosing a bbox below.")
+    print()
+
+    # ── Highway selection ─────────────────────────────────────────────────
+    raw = input(
+        f"    Highway number [1–{len(hws)}] or highway ref (e.g. A5): "
+    ).strip()
+
+    custom_bbox: Optional[Tuple] = None
+    if raw.isdigit():
+        idx = int(raw)
+        if not (1 <= idx <= len(hws)):
+            _err("Number out of range.")
+            return None
+        hw_info = hws[idx - 1]
+        highway_ref = hw_info["ref"]
+        approx_km   = hw_info["approx_km"]
+    else:
+        highway_ref = raw.upper()
+        if highway_ref not in HIGHWAY_REGISTRY:
+            _warn(f"'{highway_ref}' is not in the built-in registry.")
+            _info("You can still use it by providing a custom bounding box.")
+            use_custom = _ask_bool("Provide a custom bounding box?", default=True)
+            if not use_custom:
+                return None
+            _info("Bounding box format: south,west,north,east  (decimal degrees)")
+            _info("Example for A96 Germany: 47.5,8.8,48.5,11.5")
+            raw_bbox = _ask("Bounding box", default="47.5,8.8,48.5,11.5")
+            try:
+                parts = [float(x.strip()) for x in raw_bbox.split(",")]
+                if len(parts) != 4:
+                    raise ValueError
+                custom_bbox = tuple(parts)
+            except ValueError:
+                _err("Invalid bounding box. Expected four comma-separated numbers.")
+                return None
+            approx_km = 300
+        else:
+            approx_km = HIGHWAY_REGISTRY[highway_ref]["approx_km"]
+
+    # ── Segment km range ─────────────────────────────────────────────────
+    _section("Segment Selection")
+    _info(f"Highway approximate total length: ~{approx_km} km")
+    start_km = _ask("Segment start (km)", default=0.0, cast=float)
+    end_km   = _ask("Segment end   (km)", default=float(min(approx_km, 400)), cast=float)
+    if start_km >= end_km:
+        _err(f"start_km ({start_km}) must be less than end_km ({end_km}).")
+        return None
+
+    # ── Map option ───────────────────────────────────────────────────────
+    show_map = _ask_bool("Show interactive map in browser?", default=False)
+
+    # ── Run the selector ─────────────────────────────────────────────────
+    _section("Fetching Data")
+    print(
+        f"  Fetching service area data for "
+        f"{_c(highway_ref, _BOLD, _YELLOW)} "
+        f"km {start_km:.0f}–{end_km:.0f} …"
+    )
+    print(_c("  (This may take a few seconds on the first run; results are cached.)", _DIM))
+    print()
+
+    try:
+        selector = HighwaySelector()
+        if custom_bbox is not None:
+            result = selector.select_custom(
+                highway_ref=highway_ref,
+                bounding_box=custom_bbox,
+                start_km=start_km,
+                end_km=end_km,
+                show_map=show_map,
+            )
+        else:
+            result = selector.select(
+                highway_ref=highway_ref,
+                start_km=start_km,
+                end_km=end_km,
+                show_map=show_map,
+            )
+    except Exception as exc:
+        _err(f"Highway selection failed: {exc}")
+        _info("Falling back to manual configuration.")
+        return None
+
+    # ── Show result ───────────────────────────────────────────────────────
+    _section("Service Areas Found")
+    src_label = {
+        "osm": _c("OpenStreetMap (live data)", _GREEN),
+        "osm_expanded": _c("OpenStreetMap (expanded search)", _GREEN),
+        "synthetic": _c("Synthetic (no OSM data found — evenly spaced)", _YELLOW),
+    }.get(result.data_source, result.data_source)
+
+    print(f"  Source : {src_label}")
+    print(
+        f"  Segment: {result.segment_start_km:.0f} – {result.segment_end_km:.0f} km  "
+        f"({_c(f'{result.segment_length_km:.1f} km', _BOLD)})"
+    )
+    print(
+        f"  Areas  : {_c(str(result.areas_in_segment), _BOLD, _GREEN)} stop areas"
+    )
+    print()
+
+    for area in result.stop_areas:
+        tag = _c(" [synthetic]", _YELLOW) if area.is_synthetic else ""
+        print(
+            f"    {_c(f'km {area.km_position:6.1f}', _CYAN)}  "
+            f"{area.name}{tag}"
+        )
+    print()
+
+    if not _ask_bool("Accept this configuration and continue?", default=True):
+        return None
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Parameter collection — Simulation
 # ---------------------------------------------------------------------------
@@ -143,12 +295,47 @@ def _confirm_run(cmd: List[str]) -> bool:
 def _collect_simulation() -> Optional[List[str]]:
     _header("Custom Simulation — Configuration")
 
-    # ── Highway ──────────────────────────────────────────────────────────────
-    _section("Highway")
-    highway_length     = _ask("Highway length (km)",          default=3000.0, cast=float)
-    num_stations       = _ask("Number of charging stations",   default=5,      cast=int)
+    # ── Highway Source ────────────────────────────────────────────────────
+    _section("Highway Source")
+    _info("You can use real highway data from OpenStreetMap (service area positions")
+    _info("are fetched automatically) or configure the highway manually.")
+    print()
+    use_real = _ask_bool("Use real highway from OpenStreetMap?", default=False)
+
+    # Variables that differ between real and manual paths
+    highway_length:      float             = 300.0
+    num_stations:        int               = 5
+    area_positions_str:  Optional[str]     = None   # pipe-joined km floats
+    area_names_str:      Optional[str]     = None   # pipe-joined names
+
+    if use_real:
+        hw_result = _run_highway_selector()
+        if hw_result is not None:
+            highway_length     = hw_result.segment_length_km
+            num_stations       = hw_result.areas_in_segment
+            area_positions_str = "|".join(
+                str(a.km_position) for a in hw_result.stop_areas
+            )
+            area_names_str = "|".join(a.name for a in hw_result.stop_areas)
+            _ok(
+                f"Locked: {num_stations} stations on "
+                f"{hw_result.highway_ref}  "
+                f"({highway_length:.1f} km)"
+            )
+        else:
+            _warn("Highway selection cancelled — falling back to manual configuration.")
+            use_real = False
+
+    if not use_real:
+        # ── Manual Highway ────────────────────────────────────────────────
+        _section("Highway")
+        highway_length    = _ask("Highway length (km)",         default=3000.0, cast=float)
+        num_stations      = _ask("Number of charging stations", default=5,      cast=int)
+
+    # ── Charging Station Config (always user-tunable) ─────────────────────
+    _section("Charging Stations")
     chargers_per_station = _ask("Chargers per station",        default=4,      cast=int)
-    waiting_spots      = _ask("Waiting spots per station",     default=6,      cast=int)
+    waiting_spots        = _ask("Waiting spots per station",   default=6,      cast=int)
 
     # ── Traffic ───────────────────────────────────────────────────────────────
     _section("Traffic")
@@ -190,6 +377,11 @@ def _collect_simulation() -> Optional[List[str]]:
         "--duration",              str(duration),
         "--output-dir",            output_dir,
     ]
+    # Real highway: pass locked positions and names from OSM
+    if area_positions_str is not None:
+        cmd += ["--charging-area-positions", area_positions_str]
+    if area_names_str is not None:
+        cmd += ["--charging-area-names", area_names_str]
     if seed_val is not None:
         cmd += ["--seed", str(seed_val)]
     if grid_kw is not None:

@@ -99,6 +99,20 @@ def parse_args():
         help="Disable emergency queue overflow (vehicles rejected even if they can't reach next station)"
     )
 
+    # Real-world highway data (set automatically by ui.py when OSM mode is used)
+    parser.add_argument(
+        "--charging-area-positions", type=str, default=None,
+        help="Pipe-separated km positions of real-world service areas "
+             "(e.g. '12.3|45.1|83.7'). Overrides auto-spacing. "
+             "Set automatically by the UI when using OpenStreetMap highway selection."
+    )
+    parser.add_argument(
+        "--charging-area-names", type=str, default=None,
+        help="Pipe-separated names of service areas matching --charging-area-positions "
+             "(e.g. 'Rasthof Alpha|Rasthof Beta'). "
+             "Set automatically by the UI when using OpenStreetMap highway selection."
+    )
+
     # Energy management
     parser.add_argument(
         "--energy-grid-max-kw", type=float, default=None,
@@ -127,6 +141,18 @@ def main():
     # Map traffic pattern string to enum
     traffic_pattern = TemporalDistribution[args.traffic_pattern]
 
+    # Parse real-world charging area positions and names (from OSM highway selection)
+    charging_area_positions = None
+    charging_area_names = None
+    if args.charging_area_positions:
+        charging_area_positions = [
+            float(x.strip()) for x in args.charging_area_positions.split("|") if x.strip()
+        ]
+        # Align num_stations with the actual number of positions
+        args.num_stations = len(charging_area_positions)
+    if args.charging_area_names:
+        charging_area_names = [n.strip() for n in args.charging_area_names.split("|") if n.strip()]
+
     # Build energy manager configs if any energy source is specified
     energy_configs = None
     has_energy = any([
@@ -153,6 +179,8 @@ def main():
     params = SimulationParameters(
         highway_length_km=args.highway_length,
         num_charging_areas=args.num_stations,
+        charging_area_positions=charging_area_positions,
+        charging_area_names=charging_area_names,
         chargers_per_area=args.chargers_per_station,
         waiting_spots_per_area=args.waiting_spots,
         vehicles_per_hour=args.vehicles_per_hour,
@@ -171,6 +199,12 @@ def main():
     print("EV CHARGE MANAGER SIMULATION")
     print("=" * 70)
     print(f"Highway: {args.highway_length} km with {args.num_stations} charging stations")
+    if charging_area_positions:
+        pos_str = "  ".join(f"{p:.1f}" for p in charging_area_positions)
+        print(f"  Service areas (real-world OSM): {pos_str} km")
+        if charging_area_names:
+            for km, name in zip(charging_area_positions, charging_area_names):
+                print(f"    km {km:6.1f}  {name}")
     print(f"Traffic: {args.vehicles_per_hour} vehicles/hour ({args.traffic_pattern})")
     print(f"Duration: {args.duration} hours")
     if args.seed is not None:
