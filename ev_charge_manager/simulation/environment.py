@@ -64,6 +64,10 @@ class SimulationConfig:
     # Energy management (optional — None means unlimited power for all areas)
     energy_manager_configs: Optional[List[EnergyManagerConfig]] = None
 
+    # Real-world service area names from HighwaySelector (optional)
+    # If provided, used instead of "Charging Area N" as the ChargingArea name.
+    charging_area_names: Optional[List[str]] = None
+
     # Vehicle history tracking (per-vehicle detailed/state/position history)
     track_vehicle_history: bool = False
 
@@ -188,9 +192,15 @@ class Environment:
         # Create charging areas
         charging_areas = []
         for i, pos in enumerate(positions):
+            names = self.config.charging_area_names
+            area_name = (
+                names[i]
+                if names and i < len(names)
+                else f"Charging Area {i + 1}"
+            )
             area = ChargingArea(
                 area_id=f"AREA-{i+1:02d}",
-                name=f"Charging Area {i+1}",
+                name=area_name,
                 location_km=pos,
                 num_chargers=self.config.chargers_per_area,
                 waiting_spots=self.config.waiting_spots_per_area

@@ -19,3 +19,7 @@ requests>=2.25.0
 # For type annotations (already in Python 3.8+, but listed for clarity)
 # typing-extensions>=4.0.0
 
+# Optional: interactive HTML map for the highway selection module
+# Install with: pip install folium
+# folium>=0.14.0
+

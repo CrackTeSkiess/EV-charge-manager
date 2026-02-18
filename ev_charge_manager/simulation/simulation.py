@@ -305,6 +305,11 @@ class SimulationParameters:
     # If provided, list length must match num_charging_areas (one config per area)
     energy_manager_configs: Optional[List[EnergyManagerConfig]] = None
 
+    # Real-world service area names (optional — set by HighwaySelector from OSM data)
+    # If provided, length must match num_charging_areas.  None falls back to
+    # "Charging Area 1", "Charging Area 2", …
+    charging_area_names: Optional[List[str]] = None
+
     def to_dict(self) -> Dict:
         """Convert to dictionary (for serialization)."""
         d = asdict(self)
@@ -459,7 +464,8 @@ class Simulation:
             random_seed=self.params.random_seed,
             track_vehicle_history=self.params.enable_vehicle_tracking,
             allow_queue_overflow=self.params.allow_queue_overflow,
-            energy_manager_configs=self.params.energy_manager_configs
+            energy_manager_configs=self.params.energy_manager_configs,
+            charging_area_names=self.params.charging_area_names,
         )
 
         # Create environment with tracker
