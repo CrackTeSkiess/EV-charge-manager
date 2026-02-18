@@ -18,12 +18,113 @@ from enum import Enum, auto
 import time
 import json
 import os
+from collections import defaultdict
 from collections import deque
 import copy
 
 from ev_charge_manager.rl.environment import MultiAgentChargingEnv, CostParameters, WeatherProfile
 from ev_charge_manager.rl.ppo_trainer import MultiAgentPPO
 from ev_charge_manager.energy import EnergyManagerAgent, GridPricingSchedule
+
+
+# ---------------------------------------------------------------------------
+# Frankfurt real-world data loader (used by MicroRLTrainer)
+# ---------------------------------------------------------------------------
+
+def _load_frankfurt_data() -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float]]:
+    """
+    Load hourly averages from the Frankfurt corridor CSV files.
+
+    Returns three dicts keyed by hour-of-day (0-23):
+      demand_profile   – mean EV charging demand (kW) per hour
+      solar_profile    – mean solar output fraction (0–1) per hour
+      wind_profile     – mean wind output fraction (0–1) per hour
+
+    Falls back to hardcoded synthetic profiles if the data files are not found.
+    """
+    base = os.path.join(
+        os.path.dirname(__file__),  # ev_charge_manager/rl/
+        "..", "..",                  # project root
+        "data", "real_world",
+    )
+    traffic_path = os.path.normpath(os.path.join(base, "frankfurt_corridor_traffic.csv"))
+    weather_path = os.path.normpath(os.path.join(base, "frankfurt_corridor_weather.csv"))
+
+    demand_profile: Dict[int, float] = {}
+    solar_profile: Dict[int, float] = {}
+    wind_profile: Dict[int, float] = {}
+
+    # --- Traffic → demand --------------------------------------------------
+    if os.path.exists(traffic_path):
+        import csv
+        hourly_ev: Dict[int, list] = defaultdict(list)
+        with open(traffic_path) as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                hour = int(row["hour"])
+                hourly_ev[hour].append(float(row["ev_vehicles_per_hour"]))
+        for h in range(24):
+            ev_arr = float(np.mean(hourly_ev.get(h, [30.0])))
+            # Convert EV arrivals/hr → charging demand kW
+            # Each EV: 150 kW rated, 85% draw, 45-min average dwell
+            demand_profile[h] = min(ev_arr * 150.0 * 0.85 * (45 / 60), 6 * 150.0)
+    else:
+        # Synthetic fallback (original hardcoded behaviour)
+        for h in range(24):
+            base_demand = 200.0
+            if 7 <= h <= 9 or 17 <= h <= 19:
+                multiplier = 1.5
+            elif h <= 5:
+                multiplier = 0.3
+            else:
+                multiplier = 1.0
+            demand_profile[h] = base_demand * multiplier
+
+    # --- Weather → solar & wind fraction -----------------------------------
+    if os.path.exists(weather_path):
+        import csv
+        hourly_ghi: Dict[int, list] = defaultdict(list)
+        hourly_wind: Dict[int, list] = defaultdict(list)
+        with open(weather_path) as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                hour = int(row["hour"])
+                hourly_ghi[hour].append(float(row["ghi_wm2"]))
+                hourly_wind[hour].append(float(row["wind_speed_ms"]))
+        for h in range(24):
+            # Solar fraction: GHI / 1000 W/m² (clear-sky peak), capped at 1
+            mean_ghi = float(np.mean(hourly_ghi.get(h, [0.0])))
+            solar_profile[h] = float(np.clip(mean_ghi / 1000.0, 0.0, 1.0))
+            # Wind fraction: simple power curve (cut-in 3 m/s, rated 12 m/s)
+            mean_wind = float(np.mean(hourly_wind.get(h, [5.0])))
+            if mean_wind < 3.0:
+                wind_frac = 0.0
+            else:
+                wind_frac = min(1.0, (mean_wind - 3.0) / (12.0 - 3.0))
+            wind_profile[h] = wind_frac
+    else:
+        # Synthetic fallback
+        for h in range(24):
+            if 6 <= h <= 18:
+                solar_profile[h] = max(0.0, 1 - ((h - 13) / 7) ** 2)
+            else:
+                solar_profile[h] = 0.0
+            wind_profile[h] = 0.5 + 0.5 * np.sin(2 * np.pi * h / 24)
+
+    return demand_profile, solar_profile, wind_profile
+
+
+# Cache at module level so the CSV is read only once per process
+_FRANKFURT_DEMAND: Optional[Dict[int, float]] = None
+_FRANKFURT_SOLAR: Optional[Dict[int, float]] = None
+_FRANKFURT_WIND: Optional[Dict[int, float]] = None
+
+
+def _get_frankfurt_profiles() -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float]]:
+    global _FRANKFURT_DEMAND, _FRANKFURT_SOLAR, _FRANKFURT_WIND
+    if _FRANKFURT_DEMAND is None:
+        _FRANKFURT_DEMAND, _FRANKFURT_SOLAR, _FRANKFURT_WIND = _load_frankfurt_data()
+    return _FRANKFURT_DEMAND, _FRANKFURT_SOLAR, _FRANKFURT_WIND
 
 
 class TrainingMode(Enum):
@@ -199,43 +300,44 @@ class MicroRLTrainer:
         }
     
     def _generate_demand(self, hour: int, station_idx: int) -> float:
-        """Generate synthetic demand pattern."""
-        base = 200 # Different base per station
-        
-        # Peak hours: 8-9 AM and 5-7 PM
-        if 7 <= hour <= 9 or 17 <= hour <= 19:
-            multiplier = 1.5
-        elif 0 <= hour <= 5:  # Night
-            multiplier = 0.3
-        else:
-            multiplier = 1.0
-        
+        """
+        Generate hourly EV charging demand (kW) from Frankfurt corridor data.
+
+        Uses real-world EV arrival rates converted to kW demand.  Falls back
+        to the original synthetic profile when the data file is unavailable.
+        """
+        demand_profile, _, _ = _get_frankfurt_profiles()
+        base = demand_profile.get(hour % 24, 200.0)
         noise = np.random.uniform(0.9, 1.1)
-        return base * multiplier * noise
-    
+        return base * noise
+
     def _generate_solar(self, hour: int, station_idx: int) -> float:
-        """Generate synthetic solar output."""
-        base_capacity = 300
-        
-        if 6 <= hour <= 18:
-            # Parabolic curve
-            time_from_noon = abs(hour - 13)
-            availability = max(0, 1 - (time_from_noon / 7) ** 2)
-        else:
-            availability = 0
-        
-        noise = np.random.uniform(0.95, 1.0)
-        return base_capacity * availability * noise
-    
+        """
+        Generate hourly solar output (kW) from Frankfurt weather data.
+
+        Converts mean GHI fraction to kW using the station's installed solar
+        capacity (default 300 kW peak).  Falls back to synthetic parabolic
+        profile when the data file is unavailable.
+        """
+        _, solar_profile, _ = _get_frankfurt_profiles()
+        base_capacity = self.base_config.get("solar_kw", 300.0)
+        fraction = solar_profile.get(hour % 24, 0.0)
+        noise = np.random.uniform(0.90, 1.05)
+        return base_capacity * fraction * noise
+
     def _generate_wind(self, hour: int, station_idx: int) -> float:
-        """Generate synthetic wind output."""
-        base = 100
-        
-        # Wind varies throughout day
-        daily_pattern = 0.5 + 0.5 * np.sin(2 * np.pi * hour / 24)
+        """
+        Generate hourly wind output (kW) from Frankfurt weather data.
+
+        Converts mean wind-speed fraction to kW using the station's installed
+        wind capacity (default 150 kW).  Falls back to synthetic sinusoidal
+        profile when the data file is unavailable.
+        """
+        _, _, wind_profile = _get_frankfurt_profiles()
+        base_capacity = self.base_config.get("wind_kw", 150.0)
+        fraction = wind_profile.get(hour % 24, 0.5)
         noise = np.random.uniform(0.7, 1.3)
-        
-        return base * daily_pattern * noise
+        return base_capacity * fraction * noise
     
     def evaluate(self, n_episodes: int = 5) -> Dict:
         """Evaluate trained micro-agents."""

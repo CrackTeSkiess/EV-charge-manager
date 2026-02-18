@@ -124,10 +124,11 @@ class MultiAgentChargingEnv(gym.Env):
         eval_mode: bool = False,
         collaboration_weight: float = 0.5,
         enable_micro_rl: bool = True,
+        enable_macro_rl: bool = True,
         micro_rl_device: str = "cpu",
     ):
         super().__init__()
-        
+
         self.n_agents = n_agents
         self.highway_length_km = highway_length_km
         self.traffic_range = traffic_range
@@ -138,6 +139,7 @@ class MultiAgentChargingEnv(gym.Env):
         self.eval_mode = eval_mode
         self.collaboration_weight = collaboration_weight
         self.enable_micro_rl = enable_micro_rl
+        self.enable_macro_rl = enable_macro_rl
         self.micro_rl_device = micro_rl_device
         self.price_variance: float = 0.0  # curriculum-controlled grid price noise
         
@@ -679,6 +681,13 @@ class MultiAgentChargingEnv(gym.Env):
     
     def step(self, actions: np.ndarray) -> Tuple[np.ndarray, np.ndarray, bool, bool, Dict]:
         """Execute one step with given actions."""
+        # When macro-RL is disabled (ablation: fixed uniform placement),
+        # override the position dimension of each action with neutral (0.0)
+        # so _decode_actions() falls back to base_spacing * (i+1).
+        if not self.enable_macro_rl:
+            actions = actions.copy()
+            actions[:, 0] = 0.0  # zero position adjustment → uniform spacing
+
         # Decode actions
         positions, configs, n_chargers_list, n_waiting_list, managers = self._decode_actions(actions)
         self.current_positions = np.array(positions)
