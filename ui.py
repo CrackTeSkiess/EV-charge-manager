@@ -333,9 +333,11 @@ def _collect_simulation() -> Optional[List[str]]:
         num_stations      = _ask("Number of charging stations", default=5,      cast=int)
 
     # ── Charging Station Config (always user-tunable) ─────────────────────
-    _section("Charging Stations")
-    chargers_per_station = _ask("Chargers per station",        default=4,      cast=int)
-    waiting_spots        = _ask("Waiting spots per station",   default=6,      cast=int)
+    _section("Station Equipment")
+    if use_real and area_positions_str is not None:
+        _info(f"Stations : {num_stations}  (fixed — from OpenStreetMap, not editable here)")
+    chargers_per_station = _ask("Chargers per station",      default=4, cast=int)
+    waiting_spots        = _ask("Waiting spots per station", default=6, cast=int)
 
     # ── Traffic ───────────────────────────────────────────────────────────────
     _section("Traffic")
@@ -420,10 +422,38 @@ def _collect_training() -> Optional[List[str]]:
         choices=["sequential", "simultaneous", "curriculum", "frozen_micro"],
     )
 
+    # ── Highway Source ────────────────────────────────────────────────────────
+    _section("Highway Source")
+    _info("Use real highway data from OpenStreetMap to fix the number of agents")
+    _info("and highway length, or configure them manually.")
+    print()
+    use_real_hw    = _ask_bool("Use real highway from OpenStreetMap?", default=False)
+
+    n_agents:       int   = 3
+    highway_length: float = 300.0
+
+    if use_real_hw:
+        hw_result = _run_highway_selector()
+        if hw_result is not None:
+            n_agents       = hw_result.areas_in_segment
+            highway_length = hw_result.segment_length_km
+            _ok(
+                f"Locked: {n_agents} agents on "
+                f"{hw_result.highway_ref}  "
+                f"({highway_length:.1f} km)"
+            )
+        else:
+            _warn("Highway selection cancelled — falling back to manual configuration.")
+            use_real_hw = False
+
     # ── Environment ───────────────────────────────────────────────────────────
     _section("Environment")
-    n_agents       = _ask("Number of charging stations / agents", default=3,     cast=int)
-    highway_length = _ask("Highway length (km)",                  default=300.0, cast=float)
+    if not use_real_hw:
+        n_agents       = _ask("Number of charging stations / agents", default=3,     cast=int)
+        highway_length = _ask("Highway length (km)",                  default=300.0, cast=float)
+    else:
+        _info(f"Agents         : {n_agents}  (fixed — from OpenStreetMap)")
+        _info(f"Highway length : {highway_length:.1f} km  (fixed — from OpenStreetMap)")
     traffic_min    = _ask("Min traffic flow (veh/hr)",            default=30.0,  cast=float)
     traffic_max    = _ask("Max traffic flow (veh/hr)",            default=80.0,  cast=float)
     sim_duration   = _ask("Macro simulation duration (hours)",    default=24.0,  cast=float)
