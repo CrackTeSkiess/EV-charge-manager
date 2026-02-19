@@ -42,6 +42,7 @@ from .geo_utils import (
     filter_nodes_by_km_range,
     haversine_km,
     project_point_to_polyline,
+    project_point_validated,
 )
 from .osm_client import HighwayGeometry, OverpassClient, ServiceArea
 
@@ -376,9 +377,15 @@ class HighwaySelector:
             cumulative_km, _ = build_polyline_km_index(geometry.nodes)
 
             for area in raw_areas:
-                raw_km = project_point_to_polyline(
+                # project_point_validated returns None if the area is farther
+                # than 3 km from the nearest highway node — filters out fuel
+                # stations on parallel roads that are in the bounding box but
+                # not on this specific highway.
+                raw_km = project_point_validated(
                     (area.lat, area.lon), geometry.nodes, cumulative_km
                 )
+                if raw_km is None:
+                    continue
                 # Convert to segment-relative position
                 segment_km = raw_km - start_km
                 if 0.0 <= segment_km <= segment_length_km:
@@ -414,9 +421,11 @@ class HighwaySelector:
                 if raw_areas_retry and geometry is not None and geometry.nodes:
                     cumulative_km, _ = build_polyline_km_index(geometry.nodes)
                     for area in raw_areas_retry:
-                        raw_km = project_point_to_polyline(
+                        raw_km = project_point_validated(
                             (area.lat, area.lon), geometry.nodes, cumulative_km
                         )
+                        if raw_km is None:
+                            continue
                         segment_km = raw_km - start_km
                         if 0.0 <= segment_km <= segment_length_km:
                             stop_areas.append(StopAreaInfo(

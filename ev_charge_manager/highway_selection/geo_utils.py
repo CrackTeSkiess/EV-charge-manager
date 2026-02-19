@@ -8,7 +8,7 @@ All distance calculations use the haversine formula.
 from __future__ import annotations
 
 import math
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 # Type alias for a geographic coordinate pair (latitude, longitude) in decimal degrees
 LatLon = Tuple[float, float]
@@ -116,6 +116,48 @@ def project_point_to_polyline(
         if d < min_dist:
             min_dist = d
             nearest_idx = i
+
+    return cumulative_km[nearest_idx]
+
+
+def project_point_validated(
+    point: LatLon,
+    nodes: List[LatLon],
+    cumulative_km: List[float],
+    max_distance_km: float = 3.0,
+) -> Optional[float]:
+    """
+    Project a point onto a polyline and return its km position, or None if
+    the point lies farther than ``max_distance_km`` from the nearest node.
+
+    This filters out service areas that happen to be inside the highway's
+    bounding box but are not actually on this specific highway (e.g. a
+    fuel station on a parallel road).
+
+    Args:
+        point: (lat, lon) to project.
+        nodes: Ordered polyline nodes.
+        cumulative_km: Cumulative km index (same length as nodes).
+        max_distance_km: Projection is rejected if the nearest highway node
+                         is farther than this distance.  Default 3 km covers
+                         the longest motorway slip roads.
+
+    Returns:
+        km position from the start of the polyline, or None if too far away.
+    """
+    if not nodes:
+        return None
+
+    min_dist = math.inf
+    nearest_idx = 0
+    for i, node in enumerate(nodes):
+        d = haversine_km(point, node)
+        if d < min_dist:
+            min_dist = d
+            nearest_idx = i
+
+    if min_dist > max_distance_km:
+        return None
 
     return cumulative_km[nearest_idx]
 

@@ -59,6 +59,7 @@ from .geo_utils import (
     build_polyline_km_index,
     haversine_km,
     project_point_to_polyline,
+    project_point_validated,
 )
 
 __all__ = [
@@ -75,4 +76,5 @@ __all__ = [
     "haversine_km",
     "build_polyline_km_index",
     "project_point_to_polyline",
+    "project_point_validated",
 ]

@@ -166,10 +166,13 @@ class OverpassClient:
         highway_type: str,
     ) -> str:
         south, west, north, east = bounding_box
+        # Include route relations so we can use their member-way ordering,
+        # which is far more reliable than greedy sorting for long highways.
         return (
             f'[out:json][timeout:{self.timeout_sec}]'
             f'[bbox:{south},{west},{north},{east}];\n'
             f'(\n'
+            f'  relation["type"="route"]["route"="road"]["ref"="{highway_ref}"];\n'
             f'  way["highway"="{highway_type}"]["ref"="{highway_ref}"];\n'
             f');\n'
             f'(._;>;);\n'
@@ -182,15 +185,21 @@ class OverpassClient:
     ) -> str:
         south, west, north, east = bounding_box
         timeout = min(self.timeout_sec, 60)
+        # Query all OSM element types (node / way / relation) for the three
+        # main tags used for motorway service facilities across Europe and the US.
+        # `out center;` makes Overpass return a centroid for ways and relations.
         return (
             f'[out:json][timeout:{timeout}]'
             f'[bbox:{south},{west},{north},{east}];\n'
             f'(\n'
             f'  node["highway"="services"];\n'
             f'  way["highway"="services"];\n'
+            f'  relation["highway"="services"];\n'
             f'  node["highway"="rest_area"];\n'
             f'  way["highway"="rest_area"];\n'
-            f'  node["amenity"="fuel"]["name"]["highway"~"motorway|trunk"];\n'
+            f'  relation["highway"="rest_area"];\n'
+            f'  node["amenity"="fuel"]["name"];\n'
+            f'  way["amenity"="fuel"]["name"];\n'
             f');\n'
             f'out center;'
         )
@@ -208,8 +217,13 @@ class OverpassClient:
         """
         Parse Overpass JSON into HighwayGeometry.
 
-        Extracts all node coordinates and stitches way segments into a single
-        directional polyline via sort_nodes_by_direction().
+        Strategy (in priority order):
+        1. If the response contains a route relation, use its member-way
+           order to assemble the polyline.  This correctly chains way segments
+           and handles the forward/backward carriageway split by filtering out
+           ways with role="backward".
+        2. If no route relation is present, fall back to the greedy
+           nearest-neighbour sort (used for custom highways not in any relation).
         """
         elements = data.get("elements", [])
         if not elements:
@@ -220,15 +234,23 @@ class OverpassClient:
             )
             return None
 
-        # Build a node_id → (lat, lon) lookup from all node elements
+        # Separate elements into nodes, ways, and route relations
         node_coords: Dict[int, LatLon] = {}
-        way_elements = []
+        way_node_ids: Dict[int, List[int]] = {}
+        way_elements: List[Dict] = []
+        route_relations: List[Dict] = []
 
         for elem in elements:
-            if elem.get("type") == "node":
+            t = elem.get("type")
+            if t == "node":
                 node_coords[elem["id"]] = (elem["lat"], elem["lon"])
-            elif elem.get("type") == "way":
+            elif t == "way":
                 way_elements.append(elem)
+                way_node_ids[elem["id"]] = elem.get("nodes", [])
+            elif t == "relation":
+                tags = elem.get("tags", {})
+                if tags.get("type") == "route":
+                    route_relations.append(elem)
 
         if not way_elements:
             warnings.warn(
@@ -237,29 +259,47 @@ class OverpassClient:
             )
             return None
 
-        # Collect all node coordinates referenced by any way
-        all_node_coords: List[LatLon] = []
-        osm_way_ids: List[int] = []
+        osm_way_ids = [w["id"] for w in way_elements]
 
-        for way in way_elements:
-            osm_way_ids.append(way["id"])
-            for node_id in way.get("nodes", []):
-                if node_id in node_coords:
-                    coord = node_coords[node_id]
-                    # Avoid exact duplicates at way junctions
-                    if not all_node_coords or all_node_coords[-1] != coord:
-                        all_node_coords.append(coord)
+        # --- Strategy 1: route-relation-based ordering ---
+        ordered_nodes: List[LatLon] = []
+        if route_relations:
+            ordered_nodes = self._assemble_from_route_relation(
+                route_relations[0], way_node_ids, node_coords
+            )
+            if len(ordered_nodes) < 2:
+                warnings.warn(
+                    f"Route relation found for '{highway_ref}' but yielded "
+                    f"only {len(ordered_nodes)} nodes; falling back to greedy sort.",
+                    RuntimeWarning,
+                )
+                ordered_nodes = []
 
-        if len(all_node_coords) < 2:
+        # --- Strategy 2: greedy nearest-neighbour sort (fallback) ---
+        if len(ordered_nodes) < 2:
+            all_coords: List[LatLon] = []
+            seen_nodes: set = set()
+            for way in way_elements:
+                for node_id in way.get("nodes", []):
+                    if node_id in node_coords and node_id not in seen_nodes:
+                        seen_nodes.add(node_id)
+                        all_coords.append(node_coords[node_id])
+            if len(all_coords) < 2:
+                warnings.warn(
+                    f"Insufficient node data for highway '{highway_ref}' "
+                    f"(only {len(all_coords)} unique nodes).",
+                    RuntimeWarning,
+                )
+                return None
+            ordered_nodes = sort_nodes_by_direction(all_coords)
+
+        if len(ordered_nodes) < 2:
             warnings.warn(
-                f"Insufficient node data for highway '{highway_ref}' "
-                f"(only {len(all_node_coords)} unique nodes).",
+                f"Could not build a valid polyline for highway '{highway_ref}'.",
                 RuntimeWarning,
             )
             return None
 
-        # Sort into a directional polyline
-        ordered_nodes = sort_nodes_by_direction(all_node_coords)
         _, total_length_km = build_polyline_km_index(ordered_nodes)
 
         return HighwayGeometry(
@@ -269,6 +309,42 @@ class OverpassClient:
             bounding_box=bounding_box,
             osm_way_ids=osm_way_ids,
         )
+
+    def _assemble_from_route_relation(
+        self,
+        relation: Dict[str, Any],
+        way_node_ids: Dict[int, List[int]],
+        node_coords: Dict[int, LatLon],
+    ) -> List[LatLon]:
+        """
+        Assemble an ordered polyline from an OSM route relation's member ways.
+
+        The relation's members are listed in driving order.  Ways with
+        role="backward" belong to the opposite carriageway and are skipped so
+        we only trace one direction of the divided motorway.
+
+        Consecutive duplicate nodes at way-junction points are removed.
+        """
+        ordered: List[LatLon] = []
+
+        for member in relation.get("members", []):
+            if member.get("type") != "way":
+                continue
+            # Skip reverse-direction carriageway
+            if member.get("role", "") == "backward":
+                continue
+
+            way_id = member.get("ref")
+            if way_id not in way_node_ids:
+                continue
+
+            for node_id in way_node_ids[way_id]:
+                if node_id in node_coords:
+                    coord = node_coords[node_id]
+                    if not ordered or ordered[-1] != coord:
+                        ordered.append(coord)
+
+        return ordered
 
     def _parse_services_response(
         self,
