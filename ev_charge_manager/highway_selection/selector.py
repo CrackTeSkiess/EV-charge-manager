@@ -366,7 +366,9 @@ class HighwaySelector:
         segment_length_km = end_km - start_km
 
         # --- Step 2: Fetch service areas ---
-        raw_areas = self.osm_client.fetch_service_areas(bounding_box)
+        raw_areas = self.osm_client.fetch_service_areas(
+            bounding_box, highway_ref=highway_ref, highway_type=highway_type
+        )
         total_osm_found = len(raw_areas)
 
         # --- Step 3: Project and filter service areas ---
@@ -417,7 +419,9 @@ class HighwaySelector:
             # Expand bounding box by 20% and retry once
             if data_source == "osm" and total_osm_found == 0:
                 expanded_bbox = self._expand_bbox(bounding_box, self.MAX_BBOX_EXPANSION)
-                raw_areas_retry = self.osm_client.fetch_service_areas(expanded_bbox)
+                raw_areas_retry = self.osm_client.fetch_service_areas(
+                    expanded_bbox, highway_ref=highway_ref, highway_type=highway_type
+                )
                 if raw_areas_retry and geometry is not None and geometry.nodes:
                     cumulative_km, _ = build_polyline_km_index(geometry.nodes)
                     for area in raw_areas_retry:

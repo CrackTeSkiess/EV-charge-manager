@@ -124,23 +124,25 @@ def project_point_validated(
     point: LatLon,
     nodes: List[LatLon],
     cumulative_km: List[float],
-    max_distance_km: float = 3.0,
+    max_distance_km: float = 1.0,
 ) -> Optional[float]:
     """
     Project a point onto a polyline and return its km position, or None if
     the point lies farther than ``max_distance_km`` from the nearest node.
 
-    This filters out service areas that happen to be inside the highway's
-    bounding box but are not actually on this specific highway (e.g. a
-    fuel station on a parallel road).
+    This is a secondary safety net.  The primary filter is the Overpass
+    ``around`` query which already restricts results to 500 m from the
+    highway ways.  This check catches any residual false positives in the
+    bbox-fallback path (custom highways without a ref).
 
     Args:
         point: (lat, lon) to project.
         nodes: Ordered polyline nodes.
         cumulative_km: Cumulative km index (same length as nodes).
         max_distance_km: Projection is rejected if the nearest highway node
-                         is farther than this distance.  Default 3 km covers
-                         the longest motorway slip roads.
+                         is farther than this distance.  Default 1 km is a
+                         conservative threshold — real service area buildings
+                         are at most a few hundred metres from the carriageway.
 
     Returns:
         km position from the start of the polyline, or None if too far away.

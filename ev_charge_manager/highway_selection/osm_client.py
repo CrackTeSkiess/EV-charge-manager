@@ -134,21 +134,28 @@ class OverpassClient:
     def fetch_service_areas(
         self,
         bounding_box: Tuple[float, float, float, float],
+        highway_ref: str = "",
+        highway_type: str = "motorway",
     ) -> List[ServiceArea]:
         """
-        Fetch motorway service areas / rest stops within the bounding box.
+        Fetch motorway service areas / rest stops near a specific highway.
 
-        Queries for both European-style 'highway=services' and
-        US-style 'highway=rest_area' nodes and ways.
+        When ``highway_ref`` is provided the query uses the Overpass
+        ``around`` filter to return only areas within 500 m of this
+        highway's ways — no bounding-box spill-over from parallel roads.
+        When ``highway_ref`` is empty the query falls back to a plain
+        bounding-box search (used for custom highways without a ref).
 
         Args:
             bounding_box: (south, west, north, east) in decimal degrees.
+            highway_ref: Highway reference string (e.g. "A1", "M1").
+            highway_type: OSM highway tag value (default "motorway").
 
         Returns:
-            List of ServiceArea objects, may be empty on API failure or if
-            no stop areas exist in the region.
+            List of ServiceArea objects; may be empty on failure or if
+            no stop areas exist along the highway.
         """
-        query = self._build_services_query(bounding_box)
+        query = self._build_services_query(bounding_box, highway_ref, highway_type)
         cache_key = f"svc_{self._hash(query)}"
         data = self._execute_query(query, cache_key)
         if data is None:
@@ -182,12 +189,35 @@ class OverpassClient:
     def _build_services_query(
         self,
         bounding_box: Tuple[float, float, float, float],
+        highway_ref: str = "",
+        highway_type: str = "motorway",
     ) -> str:
         south, west, north, east = bounding_box
         timeout = min(self.timeout_sec, 60)
-        # Query all OSM element types (node / way / relation) for the three
-        # main tags used for motorway service facilities across Europe and the US.
-        # `out center;` makes Overpass return a centroid for ways and relations.
+
+        if highway_ref:
+            # Preferred strategy: use Overpass named-set + around filter.
+            # First select all ways of this specific highway (ref + type),
+            # then find service areas within 500 m of those ways only.
+            # This scopes results strictly to the highway corridor and
+            # avoids picking up fuel stations on parallel B-roads or cities.
+            return (
+                f'[out:json][timeout:{timeout}]'
+                f'[bbox:{south},{west},{north},{east}];\n'
+                f'way["highway"="{highway_type}"]["ref"="{highway_ref}"]->.hw;\n'
+                f'(\n'
+                f'  node(around.hw:500)["highway"="services"];\n'
+                f'  way(around.hw:500)["highway"="services"];\n'
+                f'  relation(around.hw:500)["highway"="services"];\n'
+                f'  node(around.hw:500)["highway"="rest_area"];\n'
+                f'  way(around.hw:500)["highway"="rest_area"];\n'
+                f'  relation(around.hw:500)["highway"="rest_area"];\n'
+                f');\n'
+                f'out center;'
+            )
+
+        # Fallback (custom highways with no ref): plain bbox query for the
+        # two specific motorway service tags only — no fuel stations.
         return (
             f'[out:json][timeout:{timeout}]'
             f'[bbox:{south},{west},{north},{east}];\n'
@@ -198,8 +228,6 @@ class OverpassClient:
             f'  node["highway"="rest_area"];\n'
             f'  way["highway"="rest_area"];\n'
             f'  relation["highway"="rest_area"];\n'
-            f'  node["amenity"="fuel"]["name"];\n'
-            f'  way["amenity"="fuel"]["name"];\n'
             f');\n'
             f'out center;'
         )
