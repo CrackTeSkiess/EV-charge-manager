@@ -198,20 +198,21 @@ class OverpassClient:
         if highway_ref:
             # Preferred strategy: use Overpass named-set + around filter.
             # First select all ways of this specific highway (ref + type),
-            # then find service areas within 500 m of those ways only.
-            # This scopes results strictly to the highway corridor and
-            # avoids picking up fuel stations on parallel B-roads or cities.
+            # then find service areas within 2 000 m of those ways only.
+            # 2 km is generous enough to capture service area buildings that
+            # sit at the end of a long access road, while still excluding
+            # parallel roads (typically 5+ km away from motorways).
             return (
                 f'[out:json][timeout:{timeout}]'
                 f'[bbox:{south},{west},{north},{east}];\n'
                 f'way["highway"="{highway_type}"]["ref"="{highway_ref}"]->.hw;\n'
                 f'(\n'
-                f'  node(around.hw:500)["highway"="services"];\n'
-                f'  way(around.hw:500)["highway"="services"];\n'
-                f'  relation(around.hw:500)["highway"="services"];\n'
-                f'  node(around.hw:500)["highway"="rest_area"];\n'
-                f'  way(around.hw:500)["highway"="rest_area"];\n'
-                f'  relation(around.hw:500)["highway"="rest_area"];\n'
+                f'  node(around.hw:2000)["highway"="services"];\n'
+                f'  way(around.hw:2000)["highway"="services"];\n'
+                f'  relation(around.hw:2000)["highway"="services"];\n'
+                f'  node(around.hw:2000)["highway"="rest_area"];\n'
+                f'  way(around.hw:2000)["highway"="rest_area"];\n'
+                f'  relation(around.hw:2000)["highway"="rest_area"];\n'
                 f');\n'
                 f'out center;'
             )
