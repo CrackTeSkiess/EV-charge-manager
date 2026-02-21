@@ -5,3 +5,9 @@ __pycache__/
 simulation_output/
 models/
 validation_output/
+
+# Test / coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
